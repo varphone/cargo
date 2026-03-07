@@ -2,6 +2,7 @@
 
 use crate::prelude::*;
 use crate::utils::cargo_process;
+use crate::utils::tools;
 
 use cargo_test_support::basic_manifest;
 use cargo_test_support::paths;
@@ -640,6 +641,77 @@ fn invalid_session_id_format() {
         .with_status(101)
         .with_stderr_data(str![[r#"
 [ERROR] expect run ID in format `20060724T012128000Z-<16-char-hex>`, got `invalid-session-id`
+
+"#]])
+        .run();
+}
+
+#[cargo_test]
+fn native_staticlib_rebuilds_show_precise_target_kind() {
+    let tool = tools::fake_native_tool();
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+            [package]
+            name = "foo"
+            version = "0.0.0"
+            edition = "2024"
+
+            [lib]
+            crate-type = ["staticlib"]
+            "#,
+        )
+        .file("src/lib.cpp", "int answer() { return 1; }\n")
+        .build();
+
+    p.cargo("check -Zbuild-analysis")
+        .env("CARGO_BUILD_ANALYSIS_ENABLED", "true")
+        .env("CXX", &tool)
+        .env("AR", &tool)
+        .masquerade_as_nightly_cargo(&["build-analysis"])
+        .run();
+
+    p.change_file("src/lib.cpp", "int answer() { return 2; }\n");
+
+    p.cargo("check -Zbuild-analysis")
+        .env("CARGO_BUILD_ANALYSIS_ENABLED", "true")
+        .env("CXX", &tool)
+        .env("AR", &tool)
+        .masquerade_as_nightly_cargo(&["build-analysis"])
+        .run();
+
+    let log = std::fs::read_to_string(paths::log_file(1)).unwrap();
+    let registered = log
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .find(|message| {
+            message["reason"] == serde_json::json!("unit-registered")
+                && message["package_id"]
+                    .as_str()
+                    .is_some_and(|package_id| package_id.contains("/foo#0.0.0"))
+        })
+        .unwrap();
+
+    assert_eq!(registered["target"]["kind"], serde_json::json!("lib"));
+    assert_eq!(
+        registered["target"]["crate_types"],
+        serde_json::json!(["staticlib"])
+    );
+
+    p.cargo("report rebuilds -Zbuild-analysis")
+        .masquerade_as_nightly_cargo(&["build-analysis"])
+        .with_stderr_data(str![[r#"
+Session: [..]
+Status: 1 unit rebuilt, 0 cached, 0 new
+
+Rebuild impact:
+  root rebuilds: 1 unit
+  cascading:     0 units
+
+Root rebuilds:
+  0. foo@0.0.0 foo "staticlib" (check): file modified: src/lib.cpp
+     impact: no cascading rebuilds
 
 "#]])
         .run();

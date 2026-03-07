@@ -7,6 +7,7 @@
 use std::fs;
 
 use crate::prelude::*;
+use crate::utils::tools;
 use cargo_test_support::assert_deterministic_mtime;
 use cargo_test_support::compare::assert_e2e;
 use cargo_test_support::git;
@@ -39,6 +40,54 @@ fn vendor_simple() {
 
     add_crates_io_vendor_config(&p);
     p.cargo("check").run();
+}
+
+#[cargo_test]
+fn vendor_preserves_native_cpp_sources_and_public_headers() {
+    let tool = tools::fake_native_tool();
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [package]
+                name = "foo"
+                version = "0.1.0"
+                edition = "2024"
+
+                [dependencies]
+                bar = "0.1.0"
+            "#,
+        )
+        .file(
+            "src/main.cpp",
+            "#include <answer.hpp>\nint native_answer();\nint main() { return native_answer(); }\n",
+        )
+        .build();
+
+    Package::new("bar", "0.1.0")
+        .file(
+            "Cargo.toml",
+            r#"
+                [package]
+                name = "bar"
+                version = "0.1.0"
+                edition = "2024"
+            "#,
+        )
+        .file("include/answer.hpp", "int native_answer();\n")
+        .file(
+            "src/lib.cpp",
+            "#include <answer.hpp>\nint native_answer() { return 7; }\n",
+        )
+        .publish();
+
+    p.cargo("vendor --respect-source-config").run();
+
+    assert!(p.root().join("vendor/bar/include/answer.hpp").is_file());
+    assert!(p.root().join("vendor/bar/src/lib.cpp").is_file());
+
+    add_crates_io_vendor_config(&p);
+    p.cargo("build -v").env("CXX", &tool).env("AR", &tool).run();
 }
 
 #[cargo_test]

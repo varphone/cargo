@@ -1,6 +1,7 @@
 //! Tests for `-Zbuild-analysis`.
 
 use crate::prelude::*;
+use crate::utils::tools;
 
 use cargo_test_support::basic_manifest;
 use cargo_test_support::compare::assert_e2e;
@@ -716,6 +717,116 @@ fn log_msg_resolution_events() {
 "#]]
         .is_json()
         .against_jsonlines(),
+    );
+}
+
+#[cargo_test]
+fn native_unit_registered_reports_target_hints() {
+    let tool = tools::fake_native_tool();
+    let p = project()
+    .file(
+        "Cargo.toml",
+        r#"
+            [package]
+            name = "foo"
+            version = "0.1.0"
+            edition = "2024"
+
+            [lib]
+            path = "src/lib.cpp"
+            crate-type = ["staticlib"]
+            native-include-dirs = ["native/private"]
+            native-defines = ["BUILD_ANALYSIS_DEFINE=1"]
+
+            [[bin]]
+            name = "foo"
+            path = "src/main.cpp"
+            native-link-search = ["native/libs"]
+            native-link-libraries = ["analysis_dep"]
+            native-link-args = ["-Wl,--analysis-link-arg"]
+        "#,
+    )
+    .file("include/answer.hpp", "int helper_answer();\n")
+    .file("native/private/detail/private.hpp", "inline int private_answer() { return 42; }\n")
+    .file("native/libs/.keep", "")
+    .file(
+      "src/lib.cpp",
+      "#include <answer.hpp>\n#include <detail/private.hpp>\nint helper_answer();\nint native_answer() { return private_answer() + helper_answer() - 42; }\n",
+    )
+    .file("src/lib/helper.cpp", "int helper_answer() { return 42; }\n")
+    .file(
+      "src/main.cpp",
+      "int native_answer();\nint main() { return native_answer(); }\n",
+    )
+    .build();
+
+    p.cargo("check -Zbuild-analysis")
+        .env("CARGO_BUILD_ANALYSIS_ENABLED", "true")
+        .env("CXX", &tool)
+        .env("AR", &tool)
+        .masquerade_as_nightly_cargo(&["build-analysis"])
+        .run();
+
+    let log = std::fs::read_to_string(log_file(0)).unwrap();
+    let registered = log
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .find(|message| {
+            message["reason"] == serde_json::json!("unit-registered")
+                && message["package_id"]
+                    .as_str()
+                    .is_some_and(|package_id| package_id.contains("/foo#"))
+                && message["target"]["crate_types"] == serde_json::json!(["staticlib"])
+        })
+        .unwrap();
+
+    assert_eq!(registered["target"]["kind"], serde_json::json!("lib"));
+    assert_eq!(
+        registered["target"]["native_language"],
+        serde_json::json!("c++")
+    );
+    let native_include_root = registered["target"]["native_include_root"]
+        .as_str()
+        .unwrap_or_else(|| panic!("missing native_include_root in {registered:#?}"));
+    assert!(native_include_root.replace('\\', "/").ends_with("/include"));
+    let native_sources_root = registered["target"]["native_sources_root"]
+        .as_str()
+        .unwrap_or_else(|| panic!("missing native_sources_root in {registered:#?}"));
+    assert!(native_sources_root.replace('\\', "/").ends_with("/src/lib"));
+    let native_include_dirs = registered["target"]["native_include_dirs"]
+        .as_array()
+        .unwrap_or_else(|| panic!("missing native_include_dirs in {registered:#?}"));
+    assert_eq!(native_include_dirs.len(), 1);
+    assert!(
+        native_include_dirs[0]
+            .as_str()
+            .unwrap()
+            .replace('\\', "/")
+            .ends_with("/native/private")
+    );
+    assert_eq!(
+        registered["target"]["native_defines"],
+        serde_json::json!(["BUILD_ANALYSIS_DEFINE=1"])
+    );
+
+    let registered_bin = log
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .find(|message| {
+            message["reason"] == serde_json::json!("unit-registered")
+                && message["package_id"]
+                    .as_str()
+                    .is_some_and(|package_id| package_id.contains("/foo#"))
+                && message["target"]["kind"] == serde_json::json!("bin")
+        })
+        .unwrap();
+    assert_eq!(
+        registered_bin["target"]["native_link_libraries"],
+        serde_json::json!(["analysis_dep"])
+    );
+    assert_eq!(
+        registered_bin["target"]["native_link_args"],
+        serde_json::json!(["-Wl,--analysis-link-arg"])
     );
 }
 

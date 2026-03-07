@@ -5,6 +5,7 @@ use std::path::Path;
 
 use crate::prelude::*;
 use crate::utils::cargo_process;
+use crate::utils::tools;
 use cargo_test_support::publish::validate_crate_contents;
 use cargo_test_support::registry::{self, Package};
 use cargo_test_support::{
@@ -84,6 +85,71 @@ src/main.rs
         ],
         (),
     );
+}
+
+#[cargo_test]
+fn package_list_includes_native_sources_and_public_headers() {
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [package]
+                name = "foo"
+                version = "0.0.1"
+                edition = "2024"
+            "#,
+        )
+        .file("include/answer.hpp", "int native_answer();\n")
+        .file(
+            "src/lib.cpp",
+            "#include <answer.hpp>\nint native_answer() { return 0; }\n",
+        )
+        .file(
+            "src/main.cpp",
+            "int native_answer();\nint main() { return native_answer(); }\n",
+        )
+        .build();
+
+    p.cargo("package --list --allow-dirty")
+        .with_stdout_data(str![[r#"
+Cargo.lock
+Cargo.toml
+Cargo.toml.orig
+include/answer.hpp
+src/lib.cpp
+src/main.cpp
+
+"#]])
+        .run();
+}
+
+#[cargo_test]
+fn package_verify_builds_native_cpp_package() {
+    let tool = tools::fake_native_tool();
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [package]
+                name = "foo"
+                version = "0.0.1"
+                edition = "2024"
+            "#,
+        )
+        .file("include/answer.hpp", "int native_answer();\n")
+        .file(
+            "src/lib.cpp",
+            "#include <answer.hpp>\nint native_answer() { return 0; }\n",
+        )
+        .file(
+            "src/main.cpp",
+            "int native_answer();\nint main() { return native_answer(); }\n",
+        )
+        .build();
+
+    p.cargo("package").env("CXX", &tool).env("AR", &tool).run();
+
+    assert!(p.root().join("target/package/foo-0.0.1.crate").is_file());
 }
 
 #[cargo_test]
