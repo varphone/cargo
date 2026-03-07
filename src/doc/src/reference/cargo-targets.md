@@ -359,6 +359,30 @@ To prevent Cargo from inferring `src/bin/mod.rs` as an executable, set
 autobins = false
 ```
 
+### Native C and C++ targets
+
+Cargo can also auto-discover simple native C and C++ targets from the package
+layout. In addition to Rust targets such as `src/lib.rs` and `src/main.rs`,
+Cargo recognizes native source files like `src/lib.c`, `src/lib.cpp`,
+`src/main.c`, `src/main.cpp`, and the corresponding `src/bin/`, `examples/`,
+`tests/`, and `benches/` layouts. The same conventions also apply to `.cc`
+and `.cxx` files.
+
+Native targets may also be declared explicitly in `[lib]`, `[[bin]]`,
+`[[example]]`, `[[test]]`, and `[[bench]]` tables by pointing `path` at a
+native source file. These targets support the native-specific manifest keys
+`native-include-root`, `native-sources-root`, `native-include-dirs`,
+`native-defines`, `native-link-search`, `native-link-libraries`, and
+`native-link-args`.
+
+For automatically discovered and explicit native targets, Cargo also supports
+native tool and flag configuration, target-specific overrides, public header
+propagation, and a narrow allowlisted mapping from
+`-Ctarget-feature=+crt-static` into native toolchain flags.
+
+See [Build Script Examples](build-script-examples.md) for the supported
+layouts, configuration details, and the current `crt-static` runtime mapping.
+
 > **Note**: For packages with the 2015 edition, the default for auto-discovery
 > is `false` if at least one target is manually defined in `Cargo.toml`.
 > Beginning with the 2018 edition, the default is always `true`.

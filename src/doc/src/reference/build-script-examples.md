@@ -240,6 +240,118 @@ Here we can start to see some of the major benefits of farming as much
 functionality as possible out to common build dependencies rather than
 duplicating logic across all build scripts!
 
+For simple native C and C++ packages, a build script is not always required.
+Cargo can automatically discover native library and binary targets directly
+from the package layout:
+
+See [Cargo Targets](cargo-targets.md#native-c-and-c-targets) for the concise
+reference version of these rules. The notes below focus on the native C/C++
+specific layouts, manifest keys, and runtime mapping details.
+
+### Native C/C++ target discovery
+
+```text
+src/lib.c
+src/lib.cpp
+src/main.c
+src/main.cpp
+src/bin/foo.c
+src/bin/foo.cpp
+src/bin/foo/main.c
+src/bin/foo/main.cpp
+examples/demo.c
+examples/demo.cpp
+examples/demo/main.c
+examples/demo/main.cpp
+tests/smoke.c
+tests/smoke.cpp
+tests/smoke/main.c
+tests/smoke/main.cpp
+benches/micro.c
+benches/micro.cpp
+benches/micro/main.c
+benches/micro/main.cpp
+```
+
+The same rules also apply to `.cc` and `.cxx` files. These native discovery
+rules are intentionally minimal:
+
+* It supports executables, static libraries, and shared libraries declared with
+    `[lib] crate-type = ["cdylib"]`.
+* Explicit manifest targets such as `[lib]`, `[[bin]]`, `[[example]]`,
+    `[[test]]`, and `[[bench]]` may also point at native C/C++ source files in
+    non-default locations via their `path` key. Native manifest targets may
+    also override their public header root with `native-include-root` and
+    companion implementation directory with `native-sources-root`, plus add
+    private compile-time include directories with `native-include-dirs` and
+    per-target preprocessor definitions with `native-defines`, plus target-local
+    linker search directories with `native-link-search` and additional native
+    libraries with `native-link-libraries`, plus raw target-local linker
+    arguments with `native-link-args`.
+* A discovered target may also include additional implementation files from a
+    companion directory with the same stem, such as `src/lib/*.c`,
+    `src/lib/*.cpp`, `src/main/*.c`, `src/main/*.cpp`, or
+    `src/bin/foo/*.c` and `src/bin/foo/*.cpp`.
+* Directory-style binaries like `src/bin/foo/main.c` or
+    `src/bin/foo/main.cpp` may include additional
+    sibling implementation files from `src/bin/foo/`.
+* The same file and directory conventions are also supported for `examples/`,
+    `tests/`, and `benches/`, so `cargo build --examples`,
+    `cargo test --test smoke`, and `cargo bench --bench micro` can discover
+    native C/C++ targets without extra manifest entries.
+* Native compilation follows Cargo's selected profile for optimization,
+    debug info, link-time optimization, stripping, and debug assertions.
+    In practice this means the native tool invocation tracks profile settings
+    like `opt-level`, `debug`, `lto`, `strip`, and `debug-assertions`.
+* Cargo also forwards the target runtime choice implied by
+    `-Ctarget-feature=+crt-static` to native C/C++ toolchains when there is a
+    clear platform mapping. See the `crt-static` notes below for the current
+    target-specific rules.
+* Extra native compile and link flags can be provided either via environment
+    variables (`CARGO_NATIVE_CPPFLAGS`, `CARGO_NATIVE_CFLAGS`,
+    `CARGO_NATIVE_CXXFLAGS`, and
+    `CARGO_NATIVE_LDFLAGS`, or their encoded `CARGO_ENCODED_NATIVE_*`
+    variants, along with `CPPFLAGS`, `CFLAGS`, `CXXFLAGS`, and `LDFLAGS`) or
+    via `.cargo/config.toml` with `build.native-cppflags`,
+    `build.native-cflags`, `build.native-cxxflags`, `build.native-ldflags`,
+    and the corresponding `target.<triple>.native-*flags` keys.
+* Cross builds can select target-specific native tools and flags with
+    `CARGO_TARGET_<TRIPLE>_NATIVE_CC`, `CARGO_TARGET_<TRIPLE>_NATIVE_CXX`,
+    `CARGO_TARGET_<TRIPLE>_NATIVE_AR`, and target-scoped flag variables such as
+    `CPPFLAGS_<TRIPLE>`, `CFLAGS_<TRIPLE>`, `CXXFLAGS_<TRIPLE>`, `LDFLAGS_<TRIPLE>`,
+    plus `CARGO_TARGET_<TRIPLE>_NATIVE_*FLAGS` and encoded variants. The same
+    tools may also be configured in `.cargo/config.toml` with
+    `build.native-cc`, `build.native-cxx`, `build.native-ar`, and the
+    corresponding `target.<triple>.native-cc`, `target.<triple>.native-cxx`,
+    `target.<triple>.native-ar` keys.
+* Passing `-Zcompile-commands` writes a `compile_commands.json` file at the
+    workspace root for all native C/C++ compilation units in the current build.
+* Public headers are exported from `include/`, while headers under `src/` are
+    treated as package-private implementation details.
+* Downstream native targets automatically receive direct dependencies'
+    `include/` directories.
+* A dependency build script can declare generated public headers with
+    `cargo::metadata=include=...`.
+
+### `crt-static` for native C/C++
+
+Cargo only translates `-Ctarget-feature=+crt-static` into native C/C++ flags
+for a small allowlisted set of target/runtime combinations where the mapping is
+clear.
+
+* `*-windows-msvc` selects the matching MSVC runtime flavor for native
+    compilation: `/MT`, `/MTd`, `/MD`, or `/MDd`, depending on whether
+    `crt-static` is enabled and whether debug assertions are on.
+* `*-windows-gnu` and other GNU-like targets add `-static-libgcc`, and add
+    `-static-libstdc++` for native C++ links.
+* `*-windows-gnullvm` does not inherit that GNU `libgcc`/`libstdc++` mapping.
+* Other `target-feature` values are not translated into native compiler or
+    linker flags.
+
+Build scripts are still the right tool for more advanced cases such as
+external build systems, generated sources, or code generation workflows that
+do not fit Cargo's default native C/C++ conventions.
+
 Back to the case study though, let’s take a quick look at the contents of the
 `src` directory:
 
