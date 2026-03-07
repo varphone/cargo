@@ -215,7 +215,10 @@ metadata_envs! {
 #[derive(Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
 pub enum TargetKind {
     Lib(Vec<CrateType>),
+    NativeLib(CrateType),
+    NativeHeaderOnlyLib,
     Bin,
+    NativeBin,
     Test,
     Bench,
     ExampleLib(Vec<CrateType>),
@@ -231,7 +234,10 @@ impl ser::Serialize for TargetKind {
         use self::TargetKind::*;
         match self {
             Lib(kinds) => s.collect_seq(kinds.iter().map(|t| t.to_string())),
+            NativeLib(..) => ["lib"].serialize(s),
+            NativeHeaderOnlyLib => ["lib"].serialize(s),
             Bin => ["bin"].serialize(s),
+            NativeBin => ["bin"].serialize(s),
             ExampleBin | ExampleLib(_) => ["example"].serialize(s),
             Test => ["test"].serialize(s),
             CustomBuild => ["custom-build"].serialize(s),
@@ -245,7 +251,10 @@ impl fmt::Debug for TargetKind {
         use self::TargetKind::*;
         match *self {
             Lib(ref kinds) => kinds.fmt(f),
+            NativeLib(ref kind) => write!(f, "native-lib({kind})"),
+            NativeHeaderOnlyLib => "native-header-only-lib".fmt(f),
             Bin => "bin".fmt(f),
+            NativeBin => "native-bin".fmt(f),
             ExampleBin | ExampleLib(_) => "example".fmt(f),
             Test => "test".fmt(f),
             CustomBuild => "custom-build".fmt(f),
@@ -257,8 +266,10 @@ impl fmt::Debug for TargetKind {
 impl TargetKind {
     pub fn description(&self) -> &'static str {
         match self {
-            TargetKind::Lib(..) => "lib",
-            TargetKind::Bin => "bin",
+            TargetKind::Lib(..) | TargetKind::NativeLib(..) | TargetKind::NativeHeaderOnlyLib => {
+                "lib"
+            }
+            TargetKind::Bin | TargetKind::NativeBin => "bin",
             TargetKind::Test => "integration-test",
             TargetKind::ExampleBin | TargetKind::ExampleLib(..) => "example",
             TargetKind::Bench => "bench",
@@ -276,6 +287,8 @@ impl TargetKind {
             TargetKind::Lib(kinds) | TargetKind::ExampleLib(kinds) => {
                 kinds.iter().any(|k| k.requires_upstream_objects())
             }
+            TargetKind::NativeLib(..) | TargetKind::NativeBin => true,
+            TargetKind::NativeHeaderOnlyLib => false,
             _ => true,
         }
     }
@@ -287,6 +300,9 @@ impl TargetKind {
             TargetKind::Lib(kinds) | TargetKind::ExampleLib(kinds) => {
                 kinds.iter().any(|k| k.benefits_from_no_embed_metadata())
             }
+            TargetKind::NativeLib(..) | TargetKind::NativeBin | TargetKind::NativeHeaderOnlyLib => {
+                false
+            }
             _ => false,
         }
     }
@@ -295,11 +311,14 @@ impl TargetKind {
     pub fn rustc_crate_types(&self) -> Vec<CrateType> {
         match self {
             TargetKind::Lib(kinds) | TargetKind::ExampleLib(kinds) => kinds.clone(),
+            TargetKind::NativeLib(kind) => vec![kind.clone()],
+            TargetKind::NativeHeaderOnlyLib => vec![],
             TargetKind::CustomBuild
             | TargetKind::Bench
             | TargetKind::Test
             | TargetKind::ExampleBin
-            | TargetKind::Bin => vec![CrateType::Bin],
+            | TargetKind::Bin
+            | TargetKind::NativeBin => vec![CrateType::Bin],
         }
     }
 }
@@ -324,6 +343,13 @@ struct TargetInner {
     // causing rebuilds. Instead the hash for the path that we send to the
     // compiler is handled elsewhere.
     src_path: TargetSourcePath,
+    native_include_root: Option<PathBuf>,
+    native_sources_root: Option<PathBuf>,
+    native_include_dirs: Vec<PathBuf>,
+    native_defines: Vec<String>,
+    native_link_search: Vec<PathBuf>,
+    native_link_libraries: Vec<String>,
+    native_link_args: Vec<String>,
     required_features: Option<Vec<String>>,
     tested: bool,
     benched: bool,
@@ -353,6 +379,38 @@ impl TargetSourcePath {
     pub fn is_path(&self) -> bool {
         matches!(self, TargetSourcePath::Path(_))
     }
+
+    pub fn is_c(&self) -> bool {
+        self.path().is_some_and(|path| {
+            path.extension()
+                .and_then(|ext| ext.to_str())
+                .is_some_and(|ext| ext == "c")
+        })
+    }
+
+    pub fn is_cpp(&self) -> bool {
+        self.path().is_some_and(|path| {
+            path.extension()
+                .and_then(|ext| ext.to_str())
+                .is_some_and(|ext| matches!(ext, "cpp" | "cc" | "cxx"))
+        })
+    }
+
+    pub fn is_native(&self) -> bool {
+        self.is_c() || self.is_cpp() || self.is_header_only()
+    }
+
+    pub fn is_header_only(&self) -> bool {
+        self.path().is_some_and(|path| {
+            path.is_dir()
+                || path
+                    .extension()
+                    .and_then(|ext| ext.to_str())
+                    .is_some_and(|ext| {
+                        matches!(ext, "h" | "hh" | "hpp" | "hxx" | "inc" | "ipp" | "tpp")
+                    })
+        })
+    }
 }
 
 impl Hash for TargetSourcePath {
@@ -378,7 +436,7 @@ impl From<PathBuf> for TargetSourcePath {
 }
 
 #[derive(Serialize)]
-struct SerializedTarget<'a> {
+pub(crate) struct SerializedTarget<'a> {
     /// Is this a `--bin bin`, `--lib`, `--example ex`?
     /// Serialized as a list of strings for historical reasons.
     kind: &'a TargetKind,
@@ -387,7 +445,7 @@ struct SerializedTarget<'a> {
     crate_types: Vec<CrateType>,
     name: &'a str,
     src_path: Option<&'a PathBuf>,
-    edition: &'a str,
+    edition: String,
     #[serde(rename = "required-features", skip_serializing_if = "Option::is_none")]
     required_features: Option<Vec<&'a str>>,
     /// Whether docs should be built for the target via `cargo doc`
@@ -396,10 +454,26 @@ struct SerializedTarget<'a> {
     doctest: bool,
     /// Whether tests should be run for the target (`test` field in `Cargo.toml`)
     test: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    native_language: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    native_include_root: Option<PathBuf>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    native_sources_root: Option<PathBuf>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    native_include_dirs: Vec<PathBuf>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    native_defines: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    native_link_search: Vec<PathBuf>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    native_link_libraries: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    native_link_args: Vec<String>,
 }
 
-impl ser::Serialize for Target {
-    fn serialize<S: ser::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+impl Target {
+    pub(crate) fn serialized_target(&self, package_root: Option<&Path>) -> SerializedTarget<'_> {
         let src_path = match self.src_path() {
             TargetSourcePath::Path(p) => Some(p),
             // Unfortunately getting the correct path would require access to
@@ -411,15 +485,28 @@ impl ser::Serialize for Target {
             crate_types: self.rustc_crate_types(),
             name: self.name(),
             src_path,
-            edition: &self.edition().to_string(),
+            edition: self.edition().to_string(),
             required_features: self
                 .required_features()
                 .map(|rf| rf.iter().map(|s| s.as_str()).collect()),
             doc: self.documented(),
             doctest: self.doctested() && self.doctestable(),
             test: self.tested(),
+            native_language: self.native_language(),
+            native_include_root: package_root.and_then(|root| self.native_include_root(root)),
+            native_sources_root: package_root.and_then(|root| self.native_sources_root(root)),
+            native_include_dirs: self.native_include_dirs().to_vec(),
+            native_defines: self.native_defines().to_vec(),
+            native_link_search: self.native_link_search().to_vec(),
+            native_link_libraries: self.native_link_libraries().to_vec(),
+            native_link_args: self.native_link_args().to_vec(),
         }
-        .serialize(s)
+    }
+}
+
+impl ser::Serialize for Target {
+    fn serialize<S: ser::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        self.serialized_target(None).serialize(s)
     }
 }
 
@@ -444,6 +531,31 @@ compact_debug! {
                             ).inner,
                             format!("lib_target({:?}, {:?}, {:?}, {:?})",
                                     self.name, kinds, self.src_path, self.edition),
+                        )
+                    }
+                    TargetKind::NativeLib(kind) => {
+                        (
+                            Target::native_lib_target(
+                                &self.name,
+                                kind.clone(),
+                                self.src_path.path().unwrap().to_path_buf(),
+                                self.edition,
+                            ).inner,
+                            format!("native_lib_target({:?}, {:?}, {:?}, {:?})",
+                                    self.name, kind, self.src_path, self.edition),
+                        )
+                    }
+                    TargetKind::NativeHeaderOnlyLib => {
+                        (
+                            Target::native_header_only_lib_target(
+                                &self.name,
+                                self.src_path.path().unwrap().to_path_buf(),
+                                self.edition,
+                            ).inner,
+                            format!(
+                                "native_header_only_lib_target({:?}, {:?}, {:?})",
+                                self.name, self.src_path, self.edition
+                            ),
                         )
                     }
                     TargetKind::CustomBuild => {
@@ -479,6 +591,13 @@ compact_debug! {
                 name_inferred
                 bin_name
                 src_path
+                native_include_root
+                native_sources_root
+                native_include_dirs
+                native_defines
+                native_link_search
+                native_link_libraries
+                native_link_args
                 required_features
                 tested
                 benched
@@ -830,6 +949,13 @@ impl Target {
                 name_inferred: false,
                 bin_name: None,
                 src_path,
+                native_include_root: None,
+                native_sources_root: None,
+                native_include_dirs: Vec::new(),
+                native_defines: Vec::new(),
+                native_link_search: Vec::new(),
+                native_link_libraries: Vec::new(),
+                native_link_args: Vec::new(),
                 required_features: None,
                 doc: false,
                 doctest: false,
@@ -863,6 +989,43 @@ impl Target {
         target
     }
 
+    pub fn native_lib_target(
+        name: &str,
+        crate_type: CrateType,
+        src_path: PathBuf,
+        edition: Edition,
+    ) -> Target {
+        let mut target = Target::with_path(src_path, edition);
+        target
+            .set_kind(TargetKind::NativeLib(crate_type))
+            .set_name(name)
+            .set_doctest(false)
+            .set_doc(false)
+            .set_tested(false)
+            .set_benched(false)
+            .set_harness(false)
+            .set_doc_scrape_examples(RustdocScrapeExamples::Disabled);
+        target
+    }
+
+    pub fn native_header_only_lib_target(
+        name: &str,
+        src_path: PathBuf,
+        edition: Edition,
+    ) -> Target {
+        let mut target = Target::with_path(src_path, edition);
+        target
+            .set_kind(TargetKind::NativeHeaderOnlyLib)
+            .set_name(name)
+            .set_doctest(false)
+            .set_doc(false)
+            .set_tested(false)
+            .set_benched(false)
+            .set_harness(false)
+            .set_doc_scrape_examples(RustdocScrapeExamples::Disabled);
+        target
+    }
+
     pub fn bin_target(
         name: &str,
         bin_name: Option<String>,
@@ -877,6 +1040,28 @@ impl Target {
             .set_binary_name(bin_name)
             .set_required_features(required_features)
             .set_doc(true);
+        target
+    }
+
+    pub fn native_bin_target(
+        name: &str,
+        bin_name: Option<String>,
+        src_path: PathBuf,
+        required_features: Option<Vec<String>>,
+        edition: Edition,
+    ) -> Target {
+        let mut target = Target::with_path(src_path, edition);
+        target
+            .set_kind(TargetKind::NativeBin)
+            .set_name(name)
+            .set_binary_name(bin_name)
+            .set_required_features(required_features)
+            .set_doc(false)
+            .set_doctest(false)
+            .set_tested(false)
+            .set_benched(false)
+            .set_harness(false)
+            .set_doc_scrape_examples(RustdocScrapeExamples::Disabled);
         target
     }
 
@@ -1018,12 +1203,16 @@ impl Target {
     }
 
     pub fn is_lib(&self) -> bool {
-        matches!(self.kind(), TargetKind::Lib(_))
+        matches!(
+            self.kind(),
+            TargetKind::Lib(_) | TargetKind::NativeLib(_) | TargetKind::NativeHeaderOnlyLib
+        )
     }
 
     pub fn is_dylib(&self) -> bool {
         match self.kind() {
             TargetKind::Lib(libs) => libs.contains(&CrateType::Dylib),
+            TargetKind::NativeLib(kind) => kind == &CrateType::Dylib,
             _ => false,
         }
     }
@@ -1031,6 +1220,7 @@ impl Target {
     pub fn is_cdylib(&self) -> bool {
         match self.kind() {
             TargetKind::Lib(libs) => libs.contains(&CrateType::Cdylib),
+            TargetKind::NativeLib(kind) => kind == &CrateType::Cdylib,
             _ => false,
         }
     }
@@ -1038,6 +1228,7 @@ impl Target {
     pub fn is_staticlib(&self) -> bool {
         match self.kind() {
             TargetKind::Lib(libs) => libs.contains(&CrateType::Staticlib),
+            TargetKind::NativeLib(kind) => kind == &CrateType::Staticlib,
             _ => false,
         }
     }
@@ -1049,12 +1240,27 @@ impl Target {
     pub fn is_linkable(&self) -> bool {
         match self.kind() {
             TargetKind::Lib(kinds) => kinds.iter().any(|k| k.is_linkable()),
+            TargetKind::NativeLib(..) => true,
             _ => false,
         }
     }
 
+    pub fn is_header_only(&self) -> bool {
+        matches!(self.kind(), TargetKind::NativeHeaderOnlyLib)
+    }
+
     pub fn is_bin(&self) -> bool {
-        *self.kind() == TargetKind::Bin
+        matches!(self.kind(), TargetKind::Bin | TargetKind::NativeBin)
+    }
+
+    pub fn is_native(&self) -> bool {
+        matches!(
+            self.kind(),
+            TargetKind::NativeLib(_) | TargetKind::NativeHeaderOnlyLib | TargetKind::NativeBin
+        ) || matches!(
+            self.kind(),
+            TargetKind::ExampleBin | TargetKind::Test | TargetKind::Bench
+        ) && self.src_path().is_native()
     }
 
     pub fn is_example(&self) -> bool {
@@ -1079,6 +1285,72 @@ impl Target {
     pub fn is_test(&self) -> bool {
         *self.kind() == TargetKind::Test
     }
+
+    pub(crate) fn native_language(&self) -> Option<&'static str> {
+        if self.is_header_only() {
+            return None;
+        }
+        self.src_path()
+            .path()
+            .filter(|_| self.is_native())
+            .and_then(native_source_language)
+    }
+
+    pub(crate) fn native_include_root(&self, package_root: &Path) -> Option<PathBuf> {
+        if !self.is_native() {
+            return None;
+        }
+
+        if let Some(path) = &self.inner.native_include_root {
+            return Some(path.clone());
+        }
+
+        if self.is_header_only() {
+            return self.src_path().path().and_then(|path| {
+                if path.is_dir() {
+                    Some(path.to_path_buf())
+                } else {
+                    path.parent().map(Path::to_path_buf)
+                }
+            });
+        }
+
+        let include_root = package_root.join("include");
+        include_root.is_dir().then_some(include_root)
+    }
+
+    pub(crate) fn native_sources_root(&self, package_root: &Path) -> Option<PathBuf> {
+        if self.is_header_only() {
+            return None;
+        }
+        if let Some(path) = &self.inner.native_sources_root {
+            return Some(path.clone());
+        }
+        let source = self.src_path().path()?;
+        self.is_native()
+            .then(|| native_companion_sources_root(package_root, source))?
+    }
+
+    pub(crate) fn native_include_dirs(&self) -> &[PathBuf] {
+        &self.inner.native_include_dirs
+    }
+
+    pub(crate) fn native_defines(&self) -> &[String] {
+        &self.inner.native_defines
+    }
+
+    pub(crate) fn native_link_search(&self) -> &[PathBuf] {
+        &self.inner.native_link_search
+    }
+
+    pub(crate) fn native_link_libraries(&self) -> &[String] {
+        &self.inner.native_link_libraries
+    }
+
+    pub(crate) fn native_link_args(&self) -> &[String] {
+        &self.inner.native_link_args
+    }
+
     pub fn is_bench(&self) -> bool {
         *self.kind() == TargetKind::Bench
     }
@@ -1151,6 +1423,34 @@ impl Target {
         Arc::make_mut(&mut self.inner).bin_name = bin_name;
         self
     }
+    pub fn set_native_include_root(&mut self, native_include_root: Option<PathBuf>) -> &mut Target {
+        Arc::make_mut(&mut self.inner).native_include_root = native_include_root;
+        self
+    }
+    pub fn set_native_sources_root(&mut self, native_sources_root: Option<PathBuf>) -> &mut Target {
+        Arc::make_mut(&mut self.inner).native_sources_root = native_sources_root;
+        self
+    }
+    pub fn set_native_include_dirs(&mut self, native_include_dirs: Vec<PathBuf>) -> &mut Target {
+        Arc::make_mut(&mut self.inner).native_include_dirs = native_include_dirs;
+        self
+    }
+    pub fn set_native_defines(&mut self, native_defines: Vec<String>) -> &mut Target {
+        Arc::make_mut(&mut self.inner).native_defines = native_defines;
+        self
+    }
+    pub fn set_native_link_search(&mut self, native_link_search: Vec<PathBuf>) -> &mut Target {
+        Arc::make_mut(&mut self.inner).native_link_search = native_link_search;
+        self
+    }
+    pub fn set_native_link_libraries(&mut self, native_link_libraries: Vec<String>) -> &mut Target {
+        Arc::make_mut(&mut self.inner).native_link_libraries = native_link_libraries;
+        self
+    }
+    pub fn set_native_link_args(&mut self, native_link_args: Vec<String>) -> &mut Target {
+        Arc::make_mut(&mut self.inner).native_link_args = native_link_args;
+        self
+    }
     pub fn set_required_features(&mut self, required_features: Option<Vec<String>>) -> &mut Target {
         Arc::make_mut(&mut self.inner).required_features = required_features;
         self
@@ -1160,8 +1460,10 @@ impl Target {
     }
     pub fn description_named(&self) -> String {
         match self.kind() {
-            TargetKind::Lib(..) => "lib".to_string(),
-            TargetKind::Bin => format!("bin \"{}\"", self.name()),
+            TargetKind::Lib(..) | TargetKind::NativeLib(..) | TargetKind::NativeHeaderOnlyLib => {
+                "lib".to_string()
+            }
+            TargetKind::Bin | TargetKind::NativeBin => format!("bin \"{}\"", self.name()),
             TargetKind::Test => format!("test \"{}\"", self.name()),
             TargetKind::Bench => format!("bench \"{}\"", self.name()),
             TargetKind::ExampleLib(..) | TargetKind::ExampleBin => {
@@ -1172,11 +1474,33 @@ impl Target {
     }
 }
 
+pub(crate) fn native_companion_sources_root(package_root: &Path, source: &Path) -> Option<PathBuf> {
+    let rel_source = source.strip_prefix(package_root).ok()?;
+    if source.file_stem().and_then(|stem| stem.to_str()) == Some("main")
+        && rel_source.starts_with(Path::new("src").join("bin"))
+    {
+        return source.parent().map(Path::to_path_buf);
+    }
+
+    let companion_dir = source.with_extension("");
+    companion_dir.is_dir().then_some(companion_dir)
+}
+
+fn native_source_language(path: &Path) -> Option<&'static str> {
+    match path.extension().and_then(|ext| ext.to_str()) {
+        Some("c") => Some("c"),
+        Some("cpp" | "cc" | "cxx") => Some("c++"),
+        _ => None,
+    }
+}
+
 impl fmt::Display for Target {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.kind() {
-            TargetKind::Lib(..) => write!(f, "Target(lib)"),
-            TargetKind::Bin => write!(f, "Target(bin: {})", self.name()),
+            TargetKind::Lib(..) | TargetKind::NativeLib(..) | TargetKind::NativeHeaderOnlyLib => {
+                write!(f, "Target(lib)")
+            }
+            TargetKind::Bin | TargetKind::NativeBin => write!(f, "Target(bin: {})", self.name()),
             TargetKind::Test => write!(f, "Target(test: {})", self.name()),
             TargetKind::Bench => write!(f, "Target(bench: {})", self.name()),
             TargetKind::ExampleBin | TargetKind::ExampleLib(..) => {

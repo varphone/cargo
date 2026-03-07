@@ -48,8 +48,10 @@ impl UnitTestError {
 
         match self.kind {
             TestKind::Test | TestKind::Bench => match self.unit.target.kind() {
-                TargetKind::Lib(_) => args.push_str("--lib"),
-                TargetKind::Bin => add("bin"),
+                TargetKind::Lib(_)
+                | TargetKind::NativeLib(..)
+                | TargetKind::NativeHeaderOnlyLib => args.push_str("--lib"),
+                TargetKind::Bin | TargetKind::NativeBin => add("bin"),
                 TargetKind::Test => add("test"),
                 TargetKind::Bench => add("bench"),
                 TargetKind::ExampleLib(_) | TargetKind::ExampleBin => add("example"),

@@ -2,6 +2,7 @@
 
 use std::borrow::Cow;
 use std::io::Write;
+use std::path::Path;
 use std::path::PathBuf;
 
 use cargo_util_schemas::core::PackageIdSpec;
@@ -161,6 +162,25 @@ pub struct Target {
     pub name: String,
     /// Target kind (lib, bin, test, bench, example, build-script).
     pub kind: Cow<'static, str>,
+    /// Concrete crate types when they carry more detail than the coarse target kind.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub crate_types: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_language: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_include_root: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_sources_root: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub native_include_dirs: Vec<PathBuf>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub native_defines: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub native_link_search: Vec<PathBuf>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub native_link_libraries: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub native_link_args: Vec<String>,
 }
 
 /// Status of the rebuild detection fingerprint.
@@ -178,21 +198,73 @@ pub enum FingerprintStatus {
     Fresh,
 }
 
-impl From<&crate::core::Target> for Target {
-    fn from(target: &crate::core::Target) -> Self {
+impl Target {
+    pub fn from_manifest_target(target: &crate::core::Target, package_root: &Path) -> Self {
         use crate::core::TargetKind;
         Self {
             name: target.name().to_string(),
             kind: match target.kind() {
-                TargetKind::Lib(..) => "lib",
-                TargetKind::Bin => "bin",
+                TargetKind::Lib(..)
+                | TargetKind::NativeLib(..)
+                | TargetKind::NativeHeaderOnlyLib => "lib",
+                TargetKind::Bin | TargetKind::NativeBin => "bin",
                 TargetKind::Test => "test",
                 TargetKind::Bench => "bench",
                 TargetKind::ExampleLib(..) | TargetKind::ExampleBin => "example",
                 TargetKind::CustomBuild => "build-script",
             }
             .into(),
+            crate_types: crate_types_for_log(target),
+            native_language: target.native_language().map(str::to_owned),
+            native_include_root: target.native_include_root(package_root),
+            native_sources_root: target.native_sources_root(package_root),
+            native_include_dirs: target.native_include_dirs().to_vec(),
+            native_defines: target.native_defines().to_vec(),
+            native_link_search: target.native_link_search().to_vec(),
+            native_link_libraries: target.native_link_libraries().to_vec(),
+            native_link_args: target.native_link_args().to_vec(),
         }
+    }
+}
+
+impl From<&crate::core::Target> for Target {
+    fn from(target: &crate::core::Target) -> Self {
+        use crate::core::TargetKind;
+        Self {
+            name: target.name().to_string(),
+            kind: match target.kind() {
+                TargetKind::Lib(..)
+                | TargetKind::NativeLib(..)
+                | TargetKind::NativeHeaderOnlyLib => "lib",
+                TargetKind::Bin | TargetKind::NativeBin => "bin",
+                TargetKind::Test => "test",
+                TargetKind::Bench => "bench",
+                TargetKind::ExampleLib(..) | TargetKind::ExampleBin => "example",
+                TargetKind::CustomBuild => "build-script",
+            }
+            .into(),
+            crate_types: crate_types_for_log(target),
+            native_language: target.native_language().map(str::to_owned),
+            native_include_root: None,
+            native_sources_root: None,
+            native_include_dirs: target.native_include_dirs().to_vec(),
+            native_defines: target.native_defines().to_vec(),
+            native_link_search: target.native_link_search().to_vec(),
+            native_link_libraries: target.native_link_libraries().to_vec(),
+            native_link_args: target.native_link_args().to_vec(),
+        }
+    }
+}
+
+fn crate_types_for_log(target: &crate::core::Target) -> Option<Vec<String>> {
+    let crate_types = target
+        .rustc_crate_types()
+        .into_iter()
+        .map(|crate_type| crate_type.to_string())
+        .collect::<Vec<_>>();
+    match crate_types.as_slice() {
+        [crate_type] if matches!(crate_type.as_str(), "lib" | "rlib" | "bin") => None,
+        _ => Some(crate_types),
     }
 }
 

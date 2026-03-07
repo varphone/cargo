@@ -13,6 +13,13 @@ use std::rc::Rc;
 pub struct TargetCfgConfig {
     pub runner: OptValue<PathAndArgs>,
     pub rustflags: OptValue<StringList>,
+    pub native_cc: OptValue<ConfigRelativePath>,
+    pub native_cxx: OptValue<ConfigRelativePath>,
+    pub native_ar: OptValue<ConfigRelativePath>,
+    pub native_cflags: OptValue<StringList>,
+    pub native_cppflags: OptValue<StringList>,
+    pub native_cxxflags: OptValue<StringList>,
+    pub native_ldflags: OptValue<StringList>,
     pub linker: OptValue<ConfigRelativePath>,
     // This is here just to ignore fields from normal `TargetConfig` because
     // all `[target]` tables are getting deserialized, whether they start with
@@ -28,6 +35,20 @@ pub struct TargetConfig {
     pub runner: OptValue<PathAndArgs>,
     /// Additional rustc flags to pass.
     pub rustflags: OptValue<StringList>,
+    /// Native C compiler executable for this target.
+    pub native_cc: OptValue<ConfigRelativePath>,
+    /// Native C++ compiler executable for this target.
+    pub native_cxx: OptValue<ConfigRelativePath>,
+    /// Native archiver executable for this target.
+    pub native_ar: OptValue<ConfigRelativePath>,
+    /// Additional native C flags to pass to native compilation.
+    pub native_cflags: OptValue<StringList>,
+    /// Additional native preprocessor flags to pass to native C/C++ compilation.
+    pub native_cppflags: OptValue<StringList>,
+    /// Additional native C++ flags to pass to native compilation.
+    pub native_cxxflags: OptValue<StringList>,
+    /// Additional native linker flags to pass to native linking.
+    pub native_ldflags: OptValue<StringList>,
     /// Additional rustdoc flags to pass.
     pub rustdocflags: OptValue<StringList>,
     /// The path of the linker for this target.
@@ -123,6 +144,13 @@ fn load_config_table(gctx: &GlobalContext, prefix: &str) -> CargoResult<TargetCo
     // environment variables would not work.
     let runner: OptValue<PathAndArgs> = gctx.get(&format!("{prefix}.runner"))?;
     let rustflags: OptValue<StringList> = gctx.get(&format!("{prefix}.rustflags"))?;
+    let native_cc: OptValue<ConfigRelativePath> = gctx.get(&format!("{prefix}.native-cc"))?;
+    let native_cxx: OptValue<ConfigRelativePath> = gctx.get(&format!("{prefix}.native-cxx"))?;
+    let native_ar: OptValue<ConfigRelativePath> = gctx.get(&format!("{prefix}.native-ar"))?;
+    let native_cflags: OptValue<StringList> = gctx.get(&format!("{prefix}.native-cflags"))?;
+    let native_cppflags: OptValue<StringList> = gctx.get(&format!("{prefix}.native-cppflags"))?;
+    let native_cxxflags: OptValue<StringList> = gctx.get(&format!("{prefix}.native-cxxflags"))?;
+    let native_ldflags: OptValue<StringList> = gctx.get(&format!("{prefix}.native-ldflags"))?;
     let rustdocflags: OptValue<StringList> = gctx.get(&format!("{prefix}.rustdocflags"))?;
     let linker: OptValue<ConfigRelativePath> = gctx.get(&format!("{prefix}.linker"))?;
     // Links do not support environment variables.
@@ -134,6 +162,13 @@ fn load_config_table(gctx: &GlobalContext, prefix: &str) -> CargoResult<TargetCo
     Ok(TargetConfig {
         runner,
         rustflags,
+        native_cc,
+        native_cxx,
+        native_ar,
+        native_cflags,
+        native_cppflags,
+        native_cxxflags,
+        native_ldflags,
         rustdocflags,
         linker,
         links_overrides: Rc::new(links_overrides),
@@ -150,7 +185,9 @@ fn parse_links_overrides(
         // Skip these keys, it shares the namespace with `TargetConfig`.
         match lib_name.as_str() {
             // `ar` is a historical thing.
-            "ar" | "linker" | "runner" | "rustflags" | "rustdocflags" => continue,
+            "ar" | "linker" | "runner" | "rustflags" | "rustdocflags" | "native-cc"
+            | "native-cxx" | "native-ar" | "native-cflags" | "native-cppflags"
+            | "native-cxxflags" | "native-ldflags" => continue,
             _ => {}
         }
         let mut output = BuildOutput::default();

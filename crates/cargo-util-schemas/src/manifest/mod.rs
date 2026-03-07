@@ -1345,6 +1345,17 @@ pub struct TomlTarget {
 
     #[cfg_attr(feature = "unstable-schema", schemars(with = "Option<String>"))]
     pub path: Option<PathValue>,
+    #[cfg_attr(feature = "unstable-schema", schemars(with = "Option<String>"))]
+    pub native_include_root: Option<PathValue>,
+    #[cfg_attr(feature = "unstable-schema", schemars(with = "Option<String>"))]
+    pub native_sources_root: Option<PathValue>,
+    #[cfg_attr(feature = "unstable-schema", schemars(with = "Option<Vec<String>>"))]
+    pub native_include_dirs: Option<Vec<PathValue>>,
+    pub native_defines: Option<Vec<String>>,
+    #[cfg_attr(feature = "unstable-schema", schemars(with = "Option<Vec<String>>"))]
+    pub native_link_search: Option<Vec<PathValue>>,
+    pub native_link_libraries: Option<Vec<String>>,
+    pub native_link_args: Option<Vec<String>>,
     // Note that `filename` is used for the cargo-feature `different_binary_name`
     pub filename: Option<String>,
     pub test: Option<bool>,

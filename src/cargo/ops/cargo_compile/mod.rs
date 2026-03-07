@@ -552,7 +552,10 @@ pub fn create_bcx<'a, 'gctx>(
                 .unwrap_or_default();
             logger.log(LogMessage::UnitRegistered {
                 package_id: unit.pkg.package_id().to_spec(),
-                target: (&unit.target).into(),
+                target: crate::util::log_message::Target::from_manifest_target(
+                    &unit.target,
+                    unit.pkg.root(),
+                ),
                 mode: unit.mode,
                 platform: target_data.short_name(&unit.kind).to_owned(),
                 index,
@@ -716,24 +719,37 @@ fn validate_target_path_as_source_file(
         ));
 
         gctx.shell().print_report(&[group], true)?;
-    } else if target_path.is_dir() {
+    } else if target_path.is_dir() && !matches!(target_kind, TargetKind::NativeHeaderOnlyLib) {
         *error_count += 1;
 
         // suggest setting the path to a likely entrypoint
         let main_rs = target_path.join("main.rs");
         let lib_rs = target_path.join("lib.rs");
 
+        let main_cpp = ["cpp", "cc", "cxx"]
+            .into_iter()
+            .map(|ext| target_path.join(format!("main.{ext}")))
+            .find(|path| path.exists());
+        let lib_cpp = ["cpp", "cc", "cxx"]
+            .into_iter()
+            .map(|ext| target_path.join(format!("lib.{ext}")))
+            .find(|path| path.exists());
+
         let suggested_files_opt = match target_kind {
-            TargetKind::Lib(_) => {
+            TargetKind::Lib(_) | TargetKind::NativeLib(..) | TargetKind::NativeHeaderOnlyLib => {
                 if lib_rs.exists() {
                     Some(format!("`{}`", lib_rs.display()))
+                } else if let Some(lib_cpp) = lib_cpp {
+                    Some(format!("`{}`", lib_cpp.display()))
                 } else {
                     None
                 }
             }
-            TargetKind::Bin => {
+            TargetKind::Bin | TargetKind::NativeBin => {
                 if main_rs.exists() {
                     Some(format!("`{}`", main_rs.display()))
+                } else if let Some(main_cpp) = main_cpp {
+                    Some(format!("`{}`", main_cpp.display()))
                 } else {
                     None
                 }
@@ -762,6 +778,8 @@ fn validate_target_path_as_source_file(
             TargetKind::ExampleLib(_) => {
                 if lib_rs.exists() {
                     Some(format!("`{}`", lib_rs.display()))
+                } else if let Some(lib_cpp) = lib_cpp {
+                    Some(format!("`{}`", lib_cpp.display()))
                 } else {
                     None
                 }

@@ -250,11 +250,13 @@ impl CompileFilter {
                 ..
             } => {
                 let rule = match *target.kind() {
-                    TargetKind::Bin => bins,
+                    TargetKind::Bin | TargetKind::NativeBin => bins,
                     TargetKind::Test => tests,
                     TargetKind::Bench => benches,
                     TargetKind::ExampleBin | TargetKind::ExampleLib(..) => examples,
-                    TargetKind::Lib(..) => {
+                    TargetKind::Lib(..)
+                    | TargetKind::NativeLib(..)
+                    | TargetKind::NativeHeaderOnlyLib => {
                         return match *lib {
                             LibRule::True => true,
                             LibRule::Default => true,

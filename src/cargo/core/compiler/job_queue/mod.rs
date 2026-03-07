@@ -923,9 +923,11 @@ impl<'gctx> DrainState<'gctx> {
             CompileMode::Doc { .. } => format!("{}(doc)", pkg_name),
             CompileMode::RunCustomBuild => format!("{}(build)", pkg_name),
             CompileMode::Test | CompileMode::Check { test: true } => match unit.target.kind() {
-                TargetKind::Lib(_) => format!("{}(test)", target_name),
+                TargetKind::Lib(_)
+                | TargetKind::NativeLib(..)
+                | TargetKind::NativeHeaderOnlyLib => format!("{}(test)", target_name),
                 TargetKind::CustomBuild => panic!("cannot test build script"),
-                TargetKind::Bin => format!("{}(bin test)", target_name),
+                TargetKind::Bin | TargetKind::NativeBin => format!("{}(bin test)", target_name),
                 TargetKind::Test => format!("{}(test)", target_name),
                 TargetKind::Bench => format!("{}(bench)", target_name),
                 TargetKind::ExampleBin | TargetKind::ExampleLib(_) => {
@@ -933,9 +935,11 @@ impl<'gctx> DrainState<'gctx> {
                 }
             },
             _ => match unit.target.kind() {
-                TargetKind::Lib(_) => pkg_name.to_string(),
+                TargetKind::Lib(_)
+                | TargetKind::NativeLib(..)
+                | TargetKind::NativeHeaderOnlyLib => pkg_name.to_string(),
                 TargetKind::CustomBuild => format!("{}(build.rs)", pkg_name),
-                TargetKind::Bin => format!("{}(bin)", target_name),
+                TargetKind::Bin | TargetKind::NativeBin => format!("{}(bin)", target_name),
                 TargetKind::Test => format!("{}(test)", target_name),
                 TargetKind::Bench => format!("{}(bench)", target_name),
                 TargetKind::ExampleBin | TargetKind::ExampleLib(_) => {

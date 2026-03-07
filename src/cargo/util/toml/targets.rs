@@ -44,6 +44,11 @@ const TARGET_KIND_EXAMPLE: &str = "example";
 const TARGET_KIND_TEST: &str = "test";
 const TARGET_KIND_BENCH: &str = "bench";
 
+const C_SOURCE_EXTENSIONS: &[&str] = &["c"];
+const CPP_SOURCE_EXTENSIONS: &[&str] = &["cpp", "cc", "cxx"];
+const NATIVE_SOURCE_EXTENSIONS: &[&str] = &["c", "cpp", "cc", "cxx"];
+const NATIVE_HEADER_EXTENSIONS: &[&str] = &["h", "hh", "hpp", "hxx", "inc", "ipp", "tpp"];
+
 #[tracing::instrument(skip_all)]
 pub(super) fn to_targets(
     features: &Features,
@@ -133,7 +138,6 @@ pub(super) fn to_targets(
                 );
             }
         }
-
         targets.push(Target::metabuild_target(&format!(
             "metabuild-{}",
             package.normalized_name().expect("previously normalized")
@@ -152,6 +156,7 @@ pub fn normalize_lib(
     autodiscover: Option<bool>,
     warnings: &mut Vec<String>,
 ) -> CargoResult<Option<TomlLibTarget>> {
+    let inferred = inferred_lib(package_root)?;
     if is_normalized(original_lib, autodiscover) {
         let Some(mut lib) = original_lib.cloned() else {
             return Ok(None);
@@ -166,10 +171,10 @@ pub fn normalize_lib(
         if let Some(PathValue(path)) = &lib.path {
             lib.path = Some(PathValue(paths::normalize_path(path).into()));
         }
+        normalize_native_manifest_paths(&mut lib);
 
         Ok(Some(lib))
     } else {
-        let inferred = inferred_lib(package_root);
         let lib = original_lib.cloned().or_else(|| {
             inferred.as_ref().map(|lib| TomlTarget {
                 path: Some(PathValue(lib.clone())),
@@ -202,7 +207,7 @@ pub fn normalize_lib(
                 } else {
                     anyhow::bail!(
                         "can't find library `{name}`, \
-                     rename file to `src/lib.rs` or specify lib.path",
+                     rename file to `src/lib.rs` or `src/lib.cpp`, add `include/` for a header-only library, or specify lib.path",
                     )
                 }
             }
@@ -211,6 +216,7 @@ pub fn normalize_lib(
         if let Some(PathValue(path)) = lib.path.as_ref() {
             lib.path = Some(PathValue(paths::normalize_path(&path).into()));
         }
+        normalize_native_manifest_paths(&mut lib);
 
         Ok(Some(lib))
     }
@@ -230,6 +236,48 @@ fn to_lib_target(
 
     let path = lib.path.as_ref().expect("previously normalized");
     let path = package_root.join(&path.0);
+
+    if is_native_source_path(&path) {
+        let source_label = native_source_language(&path);
+        let crate_type = match lib.crate_types() {
+            None => CrateType::Staticlib,
+            Some(crate_types) if crate_types.is_empty() => CrateType::Staticlib,
+            Some(crate_types) if crate_types.len() == 1 => match crate_types[0].as_str() {
+                "staticlib" => CrateType::Staticlib,
+                "cdylib" => CrateType::Cdylib,
+                other => anyhow::bail!(
+                    "{source_label} library `{}` only supports crate-type `staticlib` or `cdylib`, found `{other}`",
+                    name_or_panic(lib)
+                ),
+            },
+            Some(crate_types) => anyhow::bail!(
+                "{source_label} library `{}` must specify at most one crate-type, found `{}`",
+                name_or_panic(lib),
+                crate_types.join(", ")
+            ),
+        };
+        let mut target = Target::native_lib_target(name_or_panic(lib), crate_type, path, edition);
+        configure(lib, &mut target, TARGET_KIND_HUMAN_LIB, warnings)?;
+        apply_native_manifest_overrides(lib, &mut target, package_root)?;
+        target.set_name_inferred(original_lib.map_or(true, |v| v.name.is_none()));
+        return Ok(Some(target));
+    }
+
+    if is_header_only_native_path(&path) {
+        if let Some(crate_types) = lib.crate_types()
+            && !crate_types.is_empty()
+        {
+            anyhow::bail!(
+                "header-only native library `{}` cannot set `crate-type`; remove it or point `lib.path` to a compilable source file",
+                name_or_panic(lib)
+            );
+        }
+        let mut target = Target::native_header_only_lib_target(name_or_panic(lib), path, edition);
+        configure(lib, &mut target, TARGET_KIND_HUMAN_LIB, warnings)?;
+        apply_native_manifest_overrides(lib, &mut target, package_root)?;
+        target.set_name_inferred(original_lib.map_or(true, |v| v.name.is_none()));
+        return Ok(Some(target));
+    }
 
     // Per the Macros 1.1 RFC:
     //
@@ -292,10 +340,11 @@ pub fn normalize_bins(
             if let Some(PathValue(path)) = &bin.path {
                 bin.path = Some(PathValue(paths::normalize_path(path).into()));
             }
+            normalize_native_manifest_paths(bin);
         }
         Ok(toml_bins)
     } else {
-        let inferred = inferred_bins(package_root, package_name);
+        let inferred = inferred_bins(package_root, package_name)?;
 
         let mut bins = toml_targets_and_inferred(
             toml_bins,
@@ -343,6 +392,7 @@ pub fn normalize_bins(
                 Err(e) => anyhow::bail!("{}", e),
             };
             bin.path = Some(PathValue(path));
+            normalize_native_manifest_paths(bin);
         }
 
         Ok(bins)
@@ -371,15 +421,26 @@ fn to_bin_targets(
     let mut result = Vec::new();
     for bin in bins {
         let path = package_root.join(&bin.path.as_ref().expect("previously normalized").0);
-        let mut target = Target::bin_target(
-            name_or_panic(bin),
-            bin.filename.clone(),
-            path,
-            bin.required_features.clone(),
-            edition,
-        );
+        let mut target = if is_native_source_path(&path) {
+            Target::native_bin_target(
+                name_or_panic(bin),
+                bin.filename.clone(),
+                path,
+                bin.required_features.clone(),
+                edition,
+            )
+        } else {
+            Target::bin_target(
+                name_or_panic(bin),
+                bin.filename.clone(),
+                path,
+                bin.required_features.clone(),
+                edition,
+            )
+        };
 
         configure(bin, &mut target, TARGET_KIND_HUMAN_BIN, warnings)?;
+        apply_native_manifest_overrides(bin, &mut target, package_root)?;
         result.push(target);
     }
     Ok(result)
@@ -415,7 +476,7 @@ pub fn normalize_examples(
     warnings: &mut Vec<String>,
     errors: &mut Vec<String>,
 ) -> CargoResult<Vec<TomlExampleTarget>> {
-    let mut inferred = || infer_from_directory(&package_root, Path::new(DEFAULT_EXAMPLE_DIR_NAME));
+    let mut inferred = || infer_non_bin_targets(&package_root, Path::new(DEFAULT_EXAMPLE_DIR_NAME));
 
     let targets = normalize_targets(
         TARGET_KIND_HUMAN_EXAMPLE,
@@ -445,6 +506,23 @@ fn to_example_targets(
     let mut result = Vec::new();
     for toml in targets {
         let path = package_root.join(&toml.path.as_ref().expect("previously normalized").0);
+        if is_native_source_path(&path) {
+            let is_bin_example = match toml.crate_types() {
+                None => true,
+                Some(crate_types) => {
+                    crate_types.is_empty()
+                        || crate_types
+                            .iter()
+                            .all(|kind| kind == CrateType::Bin.as_str())
+                }
+            };
+            if !is_bin_example {
+                anyhow::bail!(
+                    "native C/C++ example `{}` must be an executable target; remove `crate-type` or use only `bin`",
+                    name_or_panic(toml)
+                );
+            }
+        }
         let crate_types = match toml.crate_types() {
             Some(kinds) => kinds.iter().map(|s| s.into()).collect(),
             None => Vec::new(),
@@ -458,6 +536,7 @@ fn to_example_targets(
             edition,
         );
         configure(&toml, &mut target, TARGET_KIND_HUMAN_EXAMPLE, warnings)?;
+        apply_native_manifest_overrides(toml, &mut target, package_root)?;
         result.push(target);
     }
 
@@ -473,7 +552,7 @@ pub fn normalize_tests(
     warnings: &mut Vec<String>,
     errors: &mut Vec<String>,
 ) -> CargoResult<Vec<TomlTestTarget>> {
-    let mut inferred = || infer_from_directory(&package_root, Path::new(DEFAULT_TEST_DIR_NAME));
+    let mut inferred = || infer_non_bin_targets(&package_root, Path::new(DEFAULT_TEST_DIR_NAME));
 
     let targets = normalize_targets(
         TARGET_KIND_HUMAN_TEST,
@@ -510,6 +589,7 @@ fn to_test_targets(
             edition,
         );
         configure(&toml, &mut target, TARGET_KIND_HUMAN_TEST, warnings)?;
+        apply_native_manifest_overrides(toml, &mut target, package_root)?;
         result.push(target);
     }
     Ok(result)
@@ -539,7 +619,7 @@ pub fn normalize_benches(
         Some(legacy_path)
     };
 
-    let mut inferred = || infer_from_directory(&package_root, Path::new(DEFAULT_BENCH_DIR_NAME));
+    let mut inferred = || infer_non_bin_targets(&package_root, Path::new(DEFAULT_BENCH_DIR_NAME));
 
     let targets = normalize_targets_with_legacy_path(
         TARGET_KIND_HUMAN_BENCH,
@@ -578,6 +658,7 @@ fn to_bench_targets(
             edition,
         );
         configure(&toml, &mut target, TARGET_KIND_HUMAN_BENCH, warnings)?;
+        apply_native_manifest_overrides(toml, &mut target, package_root)?;
         result.push(target);
     }
 
@@ -609,7 +690,7 @@ fn normalize_targets(
     target_kind_human: &str,
     target_kind: &str,
     toml_targets: Option<&Vec<TomlTarget>>,
-    inferred: &mut dyn FnMut() -> Vec<(String, PathBuf)>,
+    inferred: &mut dyn FnMut() -> CargoResult<Vec<(String, PathBuf)>>,
     package_root: &Path,
     edition: Edition,
     autodiscover: Option<bool>,
@@ -636,7 +717,7 @@ fn normalize_targets_with_legacy_path(
     target_kind_human: &str,
     target_kind: &str,
     toml_targets: Option<&Vec<TomlTarget>>,
-    inferred: &mut dyn FnMut() -> Vec<(String, PathBuf)>,
+    inferred: &mut dyn FnMut() -> CargoResult<Vec<(String, PathBuf)>>,
     package_root: &Path,
     edition: Edition,
     autodiscover: Option<bool>,
@@ -657,10 +738,11 @@ fn normalize_targets_with_legacy_path(
             if let Some(PathValue(path)) = &target.path {
                 target.path = Some(PathValue(paths::normalize_path(path).into()));
             }
+            normalize_native_manifest_paths(target);
         }
         Ok(toml_targets)
     } else {
-        let inferred = inferred();
+        let inferred = inferred()?;
         let toml_targets = toml_targets_and_inferred(
             toml_targets,
             &inferred,
@@ -699,56 +781,335 @@ fn normalize_targets_with_legacy_path(
                 }
             };
             target.path = Some(PathValue(paths::normalize_path(&path).into()));
+            normalize_native_manifest_paths(&mut target);
             result.push(target);
         }
         Ok(result)
     }
 }
 
-fn inferred_lib(package_root: &Path) -> Option<PathBuf> {
-    let lib = Path::new("src").join("lib.rs");
-    if package_root.join(&lib).exists() {
-        Some(lib)
+fn inferred_lib(package_root: &Path) -> CargoResult<Option<PathBuf>> {
+    let rust_lib = Path::new("src").join("lib.rs");
+    let native_libs = collect_native_candidates(package_root, Path::new("src"), "lib", false)?;
+    let header_only_dir = package_root.join("include");
+    let has_rust_lib = package_root.join(&rust_lib).exists();
+    if has_rust_lib && !native_libs.is_empty() {
+        anyhow::bail!(
+            "found conflicting library targets at `src/lib.rs` and `{}`; a package cannot define both a Rust and C++ default library target",
+            native_libs[0].display()
+        );
+    }
+    if has_rust_lib {
+        Ok(Some(rust_lib))
+    } else if let Some(native_lib) = native_libs.into_iter().next() {
+        Ok(Some(native_lib))
+    } else if header_only_dir.is_dir() {
+        Ok(Some(PathBuf::from("include")))
     } else {
-        None
+        Ok(None)
     }
 }
 
-fn inferred_bins(package_root: &Path, package_name: &str) -> Vec<(String, PathBuf)> {
-    let main = "src/main.rs";
+fn inferred_bins(package_root: &Path, package_name: &str) -> CargoResult<Vec<(String, PathBuf)>> {
+    let main = Path::new("src").join("main.rs");
+    let native_main = collect_native_candidates(package_root, Path::new("src"), "main", false)?;
+    let has_rust_main = package_root.join(&main).exists();
+    if has_rust_main && !native_main.is_empty() {
+        anyhow::bail!(
+            "found conflicting binary targets at `src/main.rs` and `{}`; a package cannot define both a Rust and C++ default binary target",
+            native_main[0].display()
+        );
+    }
+
     let mut result = Vec::new();
-    if package_root.join(main).exists() {
-        let main = PathBuf::from(main);
+    if has_rust_main {
         result.push((package_name.to_string(), main));
+    } else if let Some(native_main) = native_main.into_iter().next() {
+        result.push((package_name.to_string(), native_main));
     }
-    let default_bin_dir_name = Path::new("src").join("bin");
-    result.extend(infer_from_directory(package_root, &default_bin_dir_name));
 
-    result
+    let default_bin_dir_name = Path::new("src").join("bin");
+    result.extend(infer_bin_sources(package_root, &default_bin_dir_name)?);
+
+    Ok(result)
 }
 
-fn infer_from_directory(package_root: &Path, relpath: &Path) -> Vec<(String, PathBuf)> {
+fn infer_bin_sources(package_root: &Path, relpath: &Path) -> CargoResult<Vec<(String, PathBuf)>> {
     let directory = package_root.join(relpath);
     let entries = match fs::read_dir(directory) {
-        Err(_) => return Vec::new(),
+        Err(_) => return Ok(Vec::new()),
         Ok(dir) => dir,
     };
 
-    entries
-        .filter_map(|e| e.ok())
-        .filter(is_not_dotfile)
-        .filter_map(|d| infer_any(package_root, &d))
-        .collect()
+    let mut seen = HashMap::new();
+    for entry in entries.filter_map(|e| e.ok()).filter(is_not_dotfile) {
+        if let Some((name, path, language)) = infer_bin_any(package_root, &entry)? {
+            if let Some((prev_path, prev_language)) =
+                seen.insert(name.clone(), (path.clone(), language))
+            {
+                let ((first_path, first_language), (second_path, second_language)) =
+                    order_conflicting_targets((prev_path, prev_language), (path, language));
+                anyhow::bail!(
+                    "found conflicting binary targets `{}` at `{}` and `{}`; a package cannot define both a {} and {} target with the same name",
+                    name,
+                    first_path.display(),
+                    second_path.display(),
+                    first_language,
+                    second_language,
+                );
+            }
+        }
+    }
+
+    let mut inferred = seen
+        .into_iter()
+        .map(|(name, (path, _))| (name, path))
+        .collect::<Vec<_>>();
+    inferred.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+    Ok(inferred)
 }
 
-fn infer_any(package_root: &Path, entry: &DirEntry) -> Option<(String, PathBuf)> {
-    if entry.file_type().map_or(false, |t| t.is_dir()) {
-        infer_subdirectory(package_root, entry)
-    } else if entry.path().extension().and_then(|p| p.to_str()) == Some("rs") {
-        infer_file(package_root, entry)
+fn order_conflicting_targets(
+    left: (PathBuf, &'static str),
+    right: (PathBuf, &'static str),
+) -> ((PathBuf, &'static str), (PathBuf, &'static str)) {
+    let left_key = (target_language_priority(left.1), left.0.clone());
+    let right_key = (target_language_priority(right.1), right.0.clone());
+    if left_key <= right_key {
+        (left, right)
     } else {
-        None
+        (right, left)
     }
+}
+
+fn target_language_priority(language: &str) -> u8 {
+    match language {
+        "Rust" => 0,
+        "C" => 1,
+        "C++" => 1,
+        _ => 2,
+    }
+}
+
+fn infer_bin_any(
+    package_root: &Path,
+    entry: &DirEntry,
+) -> CargoResult<Option<(String, PathBuf, &'static str)>> {
+    if entry.file_type().map_or(false, |t| t.is_dir()) {
+        infer_bin_subdirectory(package_root, entry)
+    } else if entry.path().extension().and_then(|p| p.to_str()) == Some("rs") {
+        Ok(infer_file(package_root, entry).map(|(name, path)| (name, path, "Rust")))
+    } else if is_native_source_path(&entry.path()) {
+        Ok(infer_file(package_root, entry)
+            .map(|(name, path)| (name, path, native_source_language(&entry.path()))))
+    } else {
+        Ok(None)
+    }
+}
+
+fn infer_bin_subdirectory(
+    package_root: &Path,
+    entry: &DirEntry,
+) -> CargoResult<Option<(String, PathBuf, &'static str)>> {
+    let path = entry.path();
+    let name = path.file_name().and_then(|p| p.to_str()).map(str::to_owned);
+    let Some(name) = name else {
+        return Ok(None);
+    };
+
+    let rust_main = path.join("main.rs");
+    let native_main = NATIVE_SOURCE_EXTENSIONS
+        .iter()
+        .map(|ext| path.join(format!("main.{ext}")))
+        .filter(|candidate| candidate.exists())
+        .collect::<Vec<_>>();
+
+    if rust_main.exists() && !native_main.is_empty() {
+        anyhow::bail!(
+            "found conflicting binary targets `{}` at `{}` and `{}`; a package cannot define both a Rust and native C/C++ target with the same name",
+            name,
+            rust_main
+                .strip_prefix(package_root)
+                .unwrap_or(&rust_main)
+                .display(),
+            native_main[0]
+                .strip_prefix(package_root)
+                .unwrap_or(&native_main[0])
+                .display(),
+        );
+    }
+
+    if rust_main.exists() {
+        let main = rust_main
+            .strip_prefix(package_root)
+            .map(|p| p.to_owned())
+            .unwrap_or(rust_main);
+        return Ok(Some((name, main, "Rust")));
+    }
+
+    if let Some(native_main) = native_main.into_iter().next() {
+        let language = native_source_language(&native_main);
+        let main = native_main
+            .strip_prefix(package_root)
+            .map(|p| p.to_owned())
+            .unwrap_or(native_main);
+        return Ok(Some((name, main, language)));
+    }
+
+    Ok(None)
+}
+
+fn collect_native_candidates(
+    package_root: &Path,
+    rel_dir: &Path,
+    stem: &str,
+    allow_multiple: bool,
+) -> CargoResult<Vec<PathBuf>> {
+    let mut matches = NATIVE_SOURCE_EXTENSIONS
+        .iter()
+        .map(|ext| rel_dir.join(format!("{stem}.{ext}")))
+        .filter(|candidate| package_root.join(candidate).exists())
+        .collect::<Vec<_>>();
+    if !allow_multiple && matches.len() > 1 {
+        let rendered = matches
+            .iter()
+            .map(|path| format!("`{}`", path.display()))
+            .collect::<Vec<_>>()
+            .join(", ");
+        anyhow::bail!(
+            "found multiple native C/C++ targets for `{stem}` at {rendered}; please keep only one default source file"
+        );
+    }
+    matches.sort();
+    Ok(matches)
+}
+
+fn is_native_source_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| NATIVE_SOURCE_EXTENSIONS.contains(&ext))
+}
+
+fn is_header_only_native_path(path: &Path) -> bool {
+    path.is_dir()
+        || path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .is_some_and(|ext| NATIVE_HEADER_EXTENSIONS.contains(&ext))
+}
+
+fn native_source_language(path: &Path) -> &'static str {
+    match path.extension().and_then(|ext| ext.to_str()) {
+        Some(ext) if C_SOURCE_EXTENSIONS.contains(&ext) => "C",
+        Some(ext) if CPP_SOURCE_EXTENSIONS.contains(&ext) => "C++",
+        _ => "native",
+    }
+}
+
+fn infer_non_bin_targets(
+    package_root: &Path,
+    relpath: &Path,
+) -> CargoResult<Vec<(String, PathBuf)>> {
+    let directory = package_root.join(relpath);
+    let entries = match fs::read_dir(directory) {
+        Err(_) => return Ok(Vec::new()),
+        Ok(dir) => dir,
+    };
+
+    let mut seen = HashMap::new();
+    for entry in entries.filter_map(|e| e.ok()).filter(is_not_dotfile) {
+        if let Some((name, path, language)) = infer_non_bin_any(package_root, &entry)? {
+            if let Some((prev_path, prev_language)) =
+                seen.insert(name.clone(), (path.clone(), language))
+            {
+                let ((first_path, first_language), (second_path, second_language)) =
+                    order_conflicting_targets((prev_path, prev_language), (path, language));
+                anyhow::bail!(
+                    "found conflicting targets `{}` at `{}` and `{}`; a package cannot define both a {} and {} target with the same name",
+                    name,
+                    first_path.display(),
+                    second_path.display(),
+                    first_language,
+                    second_language,
+                );
+            }
+        }
+    }
+
+    let mut inferred = seen
+        .into_iter()
+        .map(|(name, (path, _))| (name, path))
+        .collect::<Vec<_>>();
+    inferred.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+    Ok(inferred)
+}
+
+fn infer_non_bin_any(
+    package_root: &Path,
+    entry: &DirEntry,
+) -> CargoResult<Option<(String, PathBuf, &'static str)>> {
+    if entry.file_type().map_or(false, |t| t.is_dir()) {
+        infer_non_bin_subdirectory(package_root, entry)
+    } else if entry.path().extension().and_then(|p| p.to_str()) == Some("rs") {
+        Ok(infer_file(package_root, entry).map(|(name, path)| (name, path, "Rust")))
+    } else if is_native_source_path(&entry.path()) {
+        Ok(infer_file(package_root, entry)
+            .map(|(name, path)| (name, path, native_source_language(&entry.path()))))
+    } else {
+        Ok(None)
+    }
+}
+
+fn infer_non_bin_subdirectory(
+    package_root: &Path,
+    entry: &DirEntry,
+) -> CargoResult<Option<(String, PathBuf, &'static str)>> {
+    let path = entry.path();
+    let name = path.file_name().and_then(|p| p.to_str()).map(str::to_owned);
+    let Some(name) = name else {
+        return Ok(None);
+    };
+
+    let rust_main = path.join("main.rs");
+    let native_main = NATIVE_SOURCE_EXTENSIONS
+        .iter()
+        .map(|ext| path.join(format!("main.{ext}")))
+        .filter(|candidate| candidate.exists())
+        .collect::<Vec<_>>();
+
+    if rust_main.exists() && !native_main.is_empty() {
+        anyhow::bail!(
+            "found conflicting targets `{}` at `{}` and `{}`; a package cannot define both a Rust and native C/C++ target with the same name",
+            name,
+            rust_main
+                .strip_prefix(package_root)
+                .unwrap_or(&rust_main)
+                .display(),
+            native_main[0]
+                .strip_prefix(package_root)
+                .unwrap_or(&native_main[0])
+                .display(),
+        );
+    }
+
+    if rust_main.exists() {
+        let main = rust_main
+            .strip_prefix(package_root)
+            .map(|p| p.to_owned())
+            .unwrap_or(rust_main);
+        return Ok(Some((name, main, "Rust")));
+    }
+
+    if let Some(native_main) = native_main.into_iter().next() {
+        let language = native_source_language(&native_main);
+        let main = native_main
+            .strip_prefix(package_root)
+            .map(|p| p.to_owned())
+            .unwrap_or(native_main);
+        return Ok(Some((name, main, language)));
+    }
+
+    Ok(None)
 }
 
 fn infer_file(package_root: &Path, entry: &DirEntry) -> Option<(String, PathBuf)> {
@@ -759,21 +1120,6 @@ fn infer_file(package_root: &Path, entry: &DirEntry) -> Option<(String, PathBuf)
         .map(|p| p.to_owned())
         .unwrap_or(path);
     Some((stem, path))
-}
-
-fn infer_subdirectory(package_root: &Path, entry: &DirEntry) -> Option<(String, PathBuf)> {
-    let path = entry.path();
-    let main = path.join("main.rs");
-    let name = path.file_name()?.to_str()?.to_owned();
-    if main.exists() {
-        let main = main
-            .strip_prefix(package_root)
-            .map(|p| p.to_owned())
-            .unwrap_or(main);
-        Some((name, main))
-    } else {
-        None
-    }
 }
 
 fn is_not_dotfile(entry: &DirEntry) -> bool {
@@ -887,6 +1233,182 @@ fn inferred_to_toml_targets(inferred: &[(String, PathBuf)]) -> Vec<TomlTarget> {
         .collect()
 }
 
+fn normalize_native_manifest_paths(target: &mut TomlTarget) {
+    if let Some(PathValue(path)) = &target.native_include_root {
+        target.native_include_root = Some(PathValue(paths::normalize_path(path).into()));
+    }
+    if let Some(PathValue(path)) = &target.native_sources_root {
+        target.native_sources_root = Some(PathValue(paths::normalize_path(path).into()));
+    }
+    if let Some(include_dirs) = &target.native_include_dirs {
+        target.native_include_dirs = Some(
+            include_dirs
+                .iter()
+                .map(|PathValue(path)| PathValue(paths::normalize_path(path).into()))
+                .collect(),
+        );
+    }
+    if let Some(link_search) = &target.native_link_search {
+        target.native_link_search = Some(
+            link_search
+                .iter()
+                .map(|PathValue(path)| PathValue(paths::normalize_path(path).into()))
+                .collect(),
+        );
+    }
+}
+
+fn apply_native_manifest_overrides(
+    toml: &TomlTarget,
+    target: &mut Target,
+    package_root: &Path,
+) -> CargoResult<()> {
+    if toml.native_include_root.is_none()
+        && toml.native_sources_root.is_none()
+        && toml.native_include_dirs.is_none()
+        && toml.native_defines.is_none()
+        && toml.native_link_search.is_none()
+        && toml.native_link_libraries.is_none()
+        && toml.native_link_args.is_none()
+    {
+        return Ok(());
+    }
+
+    if !target.is_native() {
+        anyhow::bail!(
+            "target `{}` sets native-only manifest keys, but those keys are only supported for native C/C++ targets",
+            name_or_panic(toml)
+        );
+    }
+
+    if let Some(PathValue(path)) = &toml.native_include_root {
+        let include_root = package_root.join(path);
+        if include_root.exists() && !include_root.is_dir() {
+            anyhow::bail!(
+                "target `{}` specifies `native-include-root = \"{}\"`, but that path is not a directory",
+                name_or_panic(toml),
+                path.display()
+            );
+        }
+        target.set_native_include_root(Some(include_root));
+    }
+
+    if let Some(PathValue(path)) = &toml.native_sources_root {
+        if target.is_header_only() {
+            anyhow::bail!(
+                "header-only native library `{}` cannot set `native-sources-root`",
+                name_or_panic(toml)
+            );
+        }
+
+        let sources_root = package_root.join(path);
+        if !sources_root.is_dir() {
+            anyhow::bail!(
+                "target `{}` specifies `native-sources-root = \"{}\"`, but that path is not a directory",
+                name_or_panic(toml),
+                path.display()
+            );
+        }
+        target.set_native_sources_root(Some(sources_root));
+    }
+
+    if let Some(include_dirs) = &toml.native_include_dirs {
+        if target.is_header_only() {
+            anyhow::bail!(
+                "header-only native library `{}` cannot set `native-include-dirs`",
+                name_or_panic(toml)
+            );
+        }
+
+        let mut normalized_dirs = Vec::with_capacity(include_dirs.len());
+        for PathValue(path) in include_dirs {
+            let include_dir = package_root.join(path);
+            if !include_dir.is_dir() {
+                anyhow::bail!(
+                    "target `{}` specifies `native-include-dirs = [\"{}\"]`, but that path is not a directory",
+                    name_or_panic(toml),
+                    path.display()
+                );
+            }
+            normalized_dirs.push(include_dir);
+        }
+        target.set_native_include_dirs(normalized_dirs);
+    }
+
+    if let Some(native_defines) = &toml.native_defines {
+        if target.is_header_only() {
+            anyhow::bail!(
+                "header-only native library `{}` cannot set `native-defines`",
+                name_or_panic(toml)
+            );
+        }
+
+        if native_defines.iter().any(|define| define.is_empty()) {
+            anyhow::bail!(
+                "target `{}` specifies `native-defines`, but defines cannot be empty strings",
+                name_or_panic(toml)
+            );
+        }
+        target.set_native_defines(native_defines.clone());
+    }
+
+    if toml.native_link_search.is_some()
+        || toml.native_link_libraries.is_some()
+        || toml.native_link_args.is_some()
+    {
+        if target.is_header_only() {
+            anyhow::bail!(
+                "header-only native library `{}` cannot set native link manifest keys",
+                name_or_panic(toml)
+            );
+        }
+        if target.is_staticlib() {
+            anyhow::bail!(
+                "static native library `{}` cannot set native link manifest keys because static libraries are archived rather than linked",
+                name_or_panic(toml)
+            );
+        }
+    }
+
+    if let Some(link_search) = &toml.native_link_search {
+        let mut normalized_dirs = Vec::with_capacity(link_search.len());
+        for PathValue(path) in link_search {
+            let search_dir = package_root.join(path);
+            if !search_dir.is_dir() {
+                anyhow::bail!(
+                    "target `{}` specifies `native-link-search = [\"{}\"]`, but that path is not a directory",
+                    name_or_panic(toml),
+                    path.display()
+                );
+            }
+            normalized_dirs.push(search_dir);
+        }
+        target.set_native_link_search(normalized_dirs);
+    }
+
+    if let Some(link_libraries) = &toml.native_link_libraries {
+        if link_libraries.iter().any(|library| library.is_empty()) {
+            anyhow::bail!(
+                "target `{}` specifies `native-link-libraries`, but library names cannot be empty strings",
+                name_or_panic(toml)
+            );
+        }
+        target.set_native_link_libraries(link_libraries.clone());
+    }
+
+    if let Some(link_args) = &toml.native_link_args {
+        if link_args.iter().any(|arg| arg.is_empty()) {
+            anyhow::bail!(
+                "target `{}` specifies `native-link-args`, but linker arguments cannot be empty strings",
+                name_or_panic(toml)
+            );
+        }
+        target.set_native_link_args(link_args.clone());
+    }
+
+    Ok(())
+}
+
 /// Will check a list of toml targets, and make sure the target names are unique within a vector.
 fn validate_unique_names(targets: &[TomlTarget], target_kind: &str) -> CargoResult<()> {
     let mut seen = HashSet::new();
@@ -973,7 +1495,7 @@ fn configure(
 /// example -> examples/*.rs, examples/*/main.rs
 /// bin -> src/bin/*.rs, src/bin/*/main.rs
 ///
-/// Note that the logic need to sync with [`infer_from_directory`] if changes.
+/// Note that the logic need to sync with non-bin target auto-discovery if changes.
 fn target_path_not_found_error_message(
     package_root: &Path,
     target: &TomlTarget,

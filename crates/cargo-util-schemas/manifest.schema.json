@@ -659,6 +659,63 @@
             "null"
           ]
         },
+        "native-include-root": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "native-sources-root": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "native-include-dirs": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "native-defines": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "native-link-search": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "native-link-libraries": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "native-link-args": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
         "filename": {
           "type": [
             "string",
