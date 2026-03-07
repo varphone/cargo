@@ -5,9 +5,9 @@
 use cargo_util_schemas::core::PackageIdSpec;
 
 use crate::GlobalContext;
-use crate::core::Target;
 use crate::core::compiler::Unit;
 use crate::core::compiler::{CompileKind, CompileMode};
+use crate::core::manifest::SerializedTarget;
 use crate::core::profiles::{Profile, UnitFor};
 use crate::util::CargoResult;
 use crate::util::interning::InternedString;
@@ -56,7 +56,7 @@ struct SerializedUnitGraph<'a> {
 #[derive(serde::Serialize)]
 struct SerializedUnit<'a> {
     pkg_id: PackageIdSpec,
-    target: &'a Target,
+    target: SerializedTarget<'a>,
     profile: &'a Profile,
     platform: CompileKind,
     mode: CompileMode,
@@ -126,7 +126,7 @@ pub fn emit_serialized_unit_graph(
                 .collect();
             SerializedUnit {
                 pkg_id: unit.pkg.package_id().to_spec(),
-                target: &unit.target,
+                target: unit.target.serialized_target(Some(unit.pkg.root())),
                 profile: &unit.profile,
                 platform: unit.kind,
                 mode: unit.mode,

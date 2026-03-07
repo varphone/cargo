@@ -15,6 +15,7 @@ use curl::easy::Easy;
 use curl::multi::{EasyHandle, Multi};
 use semver::Version;
 use serde::Serialize;
+use serde::ser::{SerializeStruct, Serializer};
 use tracing::debug;
 
 use crate::core::compiler::{CompileKind, RustcTargetData};
@@ -67,7 +68,6 @@ impl PartialOrd for Package {
 }
 
 /// A Package in a form where `Serialize` can be derived.
-#[derive(Serialize)]
 pub struct SerializedPackage {
     name: InternedString,
     version: Version,
@@ -91,12 +91,57 @@ pub struct SerializedPackage {
     documentation: Option<String>,
     edition: String,
     links: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     metabuild: Option<Vec<String>>,
     default_run: Option<String>,
     rust_version: Option<RustVersion>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     hints: Option<Hints>,
+}
+
+impl Serialize for SerializedPackage {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut state = serializer.serialize_struct("SerializedPackage", 24)?;
+        let package_root = self
+            .manifest_path
+            .parent()
+            .expect("package manifest should have a parent");
+        let targets: Vec<_> = self
+            .targets
+            .iter()
+            .map(|target| target.serialized_target(Some(package_root)))
+            .collect();
+
+        state.serialize_field("name", &self.name)?;
+        state.serialize_field("version", &self.version)?;
+        state.serialize_field("id", &self.id)?;
+        state.serialize_field("license", &self.license)?;
+        state.serialize_field("license_file", &self.license_file)?;
+        state.serialize_field("description", &self.description)?;
+        state.serialize_field("source", &self.source)?;
+        state.serialize_field("dependencies", &self.dependencies)?;
+        state.serialize_field("targets", &targets)?;
+        state.serialize_field("features", &self.features)?;
+        state.serialize_field("manifest_path", &self.manifest_path)?;
+        state.serialize_field("metadata", &self.metadata)?;
+        state.serialize_field("publish", &self.publish)?;
+        state.serialize_field("authors", &self.authors)?;
+        state.serialize_field("categories", &self.categories)?;
+        state.serialize_field("keywords", &self.keywords)?;
+        state.serialize_field("readme", &self.readme)?;
+        state.serialize_field("repository", &self.repository)?;
+        state.serialize_field("homepage", &self.homepage)?;
+        state.serialize_field("documentation", &self.documentation)?;
+        state.serialize_field("edition", &self.edition)?;
+        state.serialize_field("links", &self.links)?;
+        if let Some(metabuild) = &self.metabuild {
+            state.serialize_field("metabuild", metabuild)?;
+        }
+        state.serialize_field("default_run", &self.default_run)?;
+        state.serialize_field("rust_version", &self.rust_version)?;
+        if let Some(hints) = &self.hints {
+            state.serialize_field("hints", hints)?;
+        }
+        state.end()
+    }
 }
 
 impl Package {

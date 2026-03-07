@@ -43,6 +43,7 @@ pub(crate) mod layout;
 mod links;
 mod locking;
 mod lto;
+mod native;
 mod output_depinfo;
 mod output_sbom;
 pub mod rustdoc;
@@ -215,6 +216,8 @@ fn compile<'gctx>(
             job.before(if job.freshness().is_dirty() {
                 let work = if unit.mode.is_doc() || unit.mode.is_doc_scrape() {
                     rustdoc(build_runner, unit)?
+                } else if unit.target.is_native() {
+                    native::compile(build_runner, unit)?
                 } else {
                     rustc(build_runner, unit, exec)?
                 };
@@ -641,6 +644,7 @@ fn link_targets(
     let export_dir = build_runner.files().export_dir();
     let package_id = unit.pkg.package_id();
     let manifest_path = PathBuf::from(unit.pkg.manifest_path());
+    let package_root = PathBuf::from(unit.pkg.root());
     let profile = unit.profile.clone();
     let unit_mode = unit.mode;
     let features = unit.features.iter().map(|s| s.to_string()).collect();
@@ -706,7 +710,7 @@ fn link_targets(
             let msg = machine_message::Artifact {
                 package_id: package_id.to_spec(),
                 manifest_path,
-                target: &target,
+                target: target.serialized_target(Some(&package_root)),
                 profile: art_profile,
                 features,
                 filenames: destinations,

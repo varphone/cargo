@@ -6,6 +6,7 @@ use serde::ser;
 use serde_json::value::RawValue;
 
 use crate::core::Target;
+use crate::core::manifest::SerializedTarget;
 
 pub trait Message: ser::Serialize {
     fn reason(&self) -> &str;
@@ -43,7 +44,7 @@ impl<'a> Message for FromCompiler<'a> {
 pub struct Artifact<'a> {
     pub package_id: PackageIdSpec,
     pub manifest_path: PathBuf,
-    pub target: &'a Target,
+    pub(crate) target: SerializedTarget<'a>,
     pub profile: ArtifactProfile,
     pub features: Vec<String>,
     pub filenames: Vec<PathBuf>,

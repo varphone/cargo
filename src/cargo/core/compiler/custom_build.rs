@@ -31,7 +31,7 @@
 //! [`CompileMode::RunCustomBuild`]: crate::core::compiler::CompileMode::RunCustomBuild
 //! [instructions]: https://doc.rust-lang.org/cargo/reference/build-scripts.html#outputs-of-the-build-script
 
-use super::{BuildRunner, Job, Unit, Work, fingerprint, get_dynamic_search_path};
+use super::{BuildRunner, FileFlavor, Job, Unit, Work, fingerprint, get_dynamic_search_path};
 use crate::core::compiler::CompileMode;
 use crate::core::compiler::artifact;
 use crate::core::compiler::build_runner::UnitHash;
@@ -485,6 +485,55 @@ fn build_work(build_runner: &mut BuildRunner<'_, '_>, unit: &Unit) -> CargoResul
             }
         })
         .collect::<Vec<_>>();
+    let native_deps = build_runner
+        .unit_deps(build_script_unit)
+        .iter()
+        .filter_map(|dep| {
+            if dep.unit.mode.is_run_custom_build()
+                || dep.unit.target.is_custom_build()
+                || !dep.unit.target.is_native()
+                || (!dep.unit.target.is_linkable() && !dep.unit.target.is_header_only())
+            {
+                return None;
+            }
+
+            let dep_name = dep.dep_name.unwrap_or(dep.unit.pkg.name()).to_string();
+            let links = dep
+                .unit
+                .pkg
+                .manifest()
+                .links()
+                .map(|links| links.to_string());
+            let mut metadata = Vec::new();
+
+            if let Some(include_dir) = dep.unit.target.native_include_root(dep.unit.pkg.root()) {
+                metadata.push(("include".to_string(), include_dir.display().to_string()));
+            }
+
+            if let Some(output) = dep
+                .unit
+                .target
+                .is_linkable()
+                .then(|| build_runner.outputs(&dep.unit))
+                .and_then(Result::ok)
+                .and_then(|outputs| {
+                    outputs
+                        .iter()
+                        .find(|output| output.flavor == FileFlavor::Normal)
+                        .map(|output| output.path.clone())
+                })
+            {
+                if dep.unit.target.is_staticlib() {
+                    metadata.push(("staticlib".to_string(), output.display().to_string()));
+                }
+                if dep.unit.target.is_cdylib() {
+                    metadata.push(("cdylib".to_string(), output.display().to_string()));
+                }
+            }
+
+            (!metadata.is_empty()).then_some((dep_name, links, metadata))
+        })
+        .collect::<Vec<_>>();
     let library_name = unit.pkg.library().map(|t| t.crate_name());
     let pkg_descr = unit.pkg.to_string();
     let build_script_outputs = Arc::clone(&build_runner.build_script_outputs);
@@ -562,6 +611,22 @@ fn build_work(build_runner: &mut BuildRunner<'_, '_>, unit: &Unit) -> CargoResul
                     if any_build_script_metadata {
                         cmd.env(
                             &format!("CARGO_DEP_{}_{}", super::envify(&name), super::envify(key)),
+                            value,
+                        );
+                    }
+                }
+            }
+            for (name, links, metadata) in &native_deps {
+                for (key, value) in metadata {
+                    if let Some(links) = links {
+                        cmd.env(
+                            &format!("DEP_{}_{}", super::envify(links), super::envify(key)),
+                            value,
+                        );
+                    }
+                    if any_build_script_metadata {
+                        cmd.env(
+                            &format!("CARGO_DEP_{}_{}", super::envify(name), super::envify(key)),
                             value,
                         );
                     }
@@ -1364,8 +1429,20 @@ pub fn build_map(build_runner: &mut BuildRunner<'_, '_>) -> CargoResult<()> {
 ///
 /// Also returns the directory containing the output, typically used later in
 /// processing.
+pub(super) fn previous_build_outputs(
+    build_runner: &BuildRunner<'_, '_>,
+    unit: &Unit,
+) -> Vec<BuildOutput> {
+    build_runner
+        .find_build_script_units(unit)
+        .into_iter()
+        .flatten()
+        .filter_map(|build_script_unit| prev_build_output(build_runner, &build_script_unit).0)
+        .collect()
+}
+
 fn prev_build_output(
-    build_runner: &mut BuildRunner<'_, '_>,
+    build_runner: &BuildRunner<'_, '_>,
     unit: &Unit,
 ) -> (Option<BuildOutput>, PathBuf) {
     let script_out_dir = if build_runner.bcx.gctx.cli_unstable().build_dir_new_layout {

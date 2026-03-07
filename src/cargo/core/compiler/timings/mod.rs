@@ -121,6 +121,9 @@ impl<'gctx> Timings<'gctx> {
         let Some(logger) = build_runner.bcx.logger else {
             return;
         };
+        if self.active.contains_key(&id) {
+            return;
+        }
         let mut target = if unit.target.is_lib()
             && matches!(unit.mode, CompileMode::Build | CompileMode::Check { .. })
         {
@@ -145,7 +148,7 @@ impl<'gctx> Timings<'gctx> {
             elapsed: start,
         });
 
-        assert!(self.active.insert(id, unit).is_none());
+        self.active.insert(id, unit);
     }
 
     /// Mark that the `.rmeta` file as generated.

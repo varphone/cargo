@@ -96,6 +96,36 @@ pub fn get_env(
                 let var = format!("CARGO_{}_FILE_{}", artifact_type_upper, dep_name_upper,);
                 env.insert(var, artifact_path.to_owned().into());
             }
+
+            if matches!(artifact_type_upper, "STATICLIB" | "CDYLIB")
+                && unit_dep.unit.target.is_native()
+            {
+                let include_dir = unit_dep.unit.pkg.root().join("include");
+                if include_dir.is_dir() {
+                    let include_dir = include_dir.into_os_string();
+                    let include_var =
+                        format!("CARGO_{}_INCLUDE_{}", artifact_type_upper, dep_name_upper);
+                    env.insert(include_var, include_dir.clone());
+
+                    let include_var_target = format!(
+                        "CARGO_{}_INCLUDE_{}_{}",
+                        artifact_type_upper,
+                        dep_name_upper,
+                        unit_dep.unit.target.name()
+                    );
+                    env.insert(include_var_target, include_dir.clone());
+
+                    if need_compat {
+                        let compat_var = format!(
+                            "CARGO_{}_INCLUDE_{}_{}",
+                            artifact_type_upper,
+                            dep_name_upper,
+                            unit_dep.unit.pkg.name()
+                        );
+                        env.insert(compat_var, include_dir.clone());
+                    }
+                }
+            }
         }
     }
     Ok(env)
@@ -108,7 +138,12 @@ fn unit_artifact_type_name_upper(unit: &Unit) -> &'static str {
             &[CrateType::Staticlib] => "STATICLIB",
             invalid => unreachable!("BUG: artifacts cannot be of type {:?}", invalid),
         },
-        TargetKind::Bin => "BIN",
+        TargetKind::NativeLib(crate_type) => match crate_type {
+            CrateType::Cdylib => "CDYLIB",
+            CrateType::Staticlib => "STATICLIB",
+            invalid => unreachable!("BUG: native artifacts cannot be of type {:?}", invalid),
+        },
+        TargetKind::Bin | TargetKind::NativeBin => "BIN",
         invalid => unreachable!("BUG: artifacts cannot be of type {:?}", invalid),
     }
 }

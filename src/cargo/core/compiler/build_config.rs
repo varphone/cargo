@@ -48,6 +48,8 @@ pub struct BuildConfig {
     pub timing_report: bool,
     /// Output SBOM precursor files.
     pub sbom: bool,
+    /// Emit a compile_commands.json file for native C++ targets.
+    pub compile_commands: bool,
     /// Build compile time dependencies only, e.g., build scripts and proc macros
     pub compile_time_deps_only: bool,
 }
@@ -129,6 +131,7 @@ impl BuildConfig {
             future_incompat_report: false,
             timing_report: false,
             sbom,
+            compile_commands: gctx.cli_unstable().compile_commands,
             compile_time_deps_only: false,
         })
     }

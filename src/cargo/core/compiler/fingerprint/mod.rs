@@ -373,6 +373,7 @@
 
 mod dep_info;
 mod dirty_reason;
+mod native;
 mod rustdoc;
 
 use std::collections::hash_map::{Entry, HashMap};
@@ -386,15 +387,6 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
-use anyhow::Context as _;
-use anyhow::format_err;
-use cargo_util::paths;
-use filetime::FileTime;
-use serde::de;
-use serde::ser;
-use serde::{Deserialize, Serialize};
-use tracing::{debug, info};
-
 use crate::core::Package;
 use crate::core::compiler::unit_graph::UnitDep;
 use crate::util;
@@ -403,6 +395,14 @@ use crate::util::interning::InternedString;
 use crate::util::log_message::LogMessage;
 use crate::util::{StableHasher, internal, path_args};
 use crate::{CARGO_ENV, GlobalContext};
+use anyhow::Context as _;
+use anyhow::format_err;
+use cargo_util::paths;
+use filetime::FileTime;
+use serde::de;
+use serde::ser;
+use serde::{Deserialize, Serialize};
+use tracing::{debug, info};
 
 use super::BuildContext;
 use super::BuildRunner;
@@ -415,7 +415,7 @@ use super::custom_build::BuildDeps;
 
 pub use self::dep_info::Checksum;
 pub use self::dep_info::parse_dep_info;
-pub use self::dep_info::parse_rustc_dep_info;
+pub(crate) use self::dep_info::parse_rustc_dep_info;
 pub use self::dep_info::translate_dep_info;
 pub use self::dirty_reason::DirtyReason;
 pub use self::rustdoc::RustdocFingerprint;
@@ -1585,7 +1585,9 @@ fn calculate_normal(
     let build_root = build_root(build_runner);
     let is_any_doc_gen = unit.mode.is_doc() || unit.mode.is_doc_scrape();
     let rustdoc_depinfo_enabled = build_runner.bcx.gctx.cli_unstable().rustdoc_depinfo;
-    let local = if is_any_doc_gen && !rustdoc_depinfo_enabled {
+    let local = if unit.target.is_native() {
+        native::local_fingerprints(build_runner, unit, &build_root)?
+    } else if is_any_doc_gen && !rustdoc_depinfo_enabled {
         // rustdoc does not have dep-info files.
         let fingerprint = pkg_fingerprint(build_runner.bcx, &unit.pkg).with_context(|| {
             format!(
@@ -1683,6 +1685,15 @@ fn calculate_normal(
         fs_status: FsStatus::Stale,
         outputs,
     })
+}
+
+pub(crate) fn write_native_dep_info(
+    build_root: &Path,
+    pkg_root: &Path,
+    dep_info_path: &Path,
+    tracked_paths: &[PathBuf],
+) -> CargoResult<()> {
+    native::write_dep_info(build_root, pkg_root, dep_info_path, tracked_paths)
 }
 
 /// Calculate a fingerprint for an "execute a build script" unit.  This is an

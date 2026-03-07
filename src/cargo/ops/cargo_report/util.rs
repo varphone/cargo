@@ -79,18 +79,30 @@ pub fn find_log_file(
 }
 
 pub fn unit_target_description(target: &Target, mode: CompileMode) -> String {
+    let display_kind = target
+        .crate_types
+        .as_ref()
+        .and_then(|crate_types| match crate_types.as_slice() {
+            [crate_type] if !matches!(crate_type.as_str(), "lib" | "rlib" | "bin") => {
+                Some(crate_type.as_str())
+            }
+            _ => None,
+        })
+        .unwrap_or(target.kind.as_ref());
+
     // This is pretty similar to how the current `core::compiler::timings`
     // renders `core::manifest::Target`. However, our target is
     // a simplified type so we cannot reuse the same logic here.
-    let mut target_str =
-        if target.kind == "lib" && matches!(mode, CompileMode::Build | CompileMode::Check { .. }) {
-            // Special case for brevity, since most dependencies hit this path.
-            "".to_string()
-        } else if target.kind == "build-script" {
-            " build-script".to_string()
-        } else {
-            format!(r#" {} "{}""#, target.name, target.kind)
-        };
+    let mut target_str = if display_kind == "lib"
+        && matches!(mode, CompileMode::Build | CompileMode::Check { .. })
+    {
+        // Special case for brevity, since most dependencies hit this path.
+        "".to_string()
+    } else if display_kind == "build-script" {
+        " build-script".to_string()
+    } else {
+        format!(r#" {} "{}""#, target.name, display_kind)
+    };
 
     match mode {
         CompileMode::Test => target_str.push_str(" (test)"),

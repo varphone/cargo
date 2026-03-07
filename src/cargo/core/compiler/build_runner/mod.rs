@@ -203,6 +203,10 @@ impl<'a, 'gctx> BuildRunner<'a, 'gctx> {
         // Now that we've figured out everything that we're going to do, do it!
         queue.execute(&mut self)?;
 
+        if self.bcx.build_config.compile_commands {
+            super::native::write_compile_commands(&self)?;
+        }
+
         // Add `OUT_DIR` to env vars if unit has a build script.
         let units_with_build_script = &self
             .bcx

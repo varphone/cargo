@@ -13,7 +13,7 @@ use crate::core::TargetKind;
 use crate::util::Rustc;
 use crate::util::interning::InternedString;
 
-use super::{BuildRunner, CompileMode, Unit};
+use super::{BuildRunner, CompileMode, CrateType, Unit};
 
 /// Typed version of a SBOM format version number.
 #[derive(Serialize, Copy, Clone, Debug, Ord, PartialOrd, Eq, PartialEq)]
@@ -46,17 +46,46 @@ struct SbomCrate {
     features: Vec<String>,
     dependencies: Vec<SbomDependency>,
     kind: TargetKind,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    crate_types: Option<Vec<CrateType>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    native_language: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    native_include_root: Option<PathBuf>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    native_sources_root: Option<PathBuf>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    native_include_dirs: Vec<PathBuf>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    native_defines: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    native_link_search: Vec<PathBuf>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    native_link_libraries: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    native_link_args: Vec<String>,
 }
 
 impl SbomCrate {
     pub fn new(unit: &Unit) -> Self {
         let package_id = unit.pkg.package_id().to_spec();
         let features = unit.features.iter().map(|f| f.to_string()).collect_vec();
+        let target = &unit.target;
+        let package_root = unit.pkg.root();
         Self {
             id: package_id,
             features,
             dependencies: Vec::new(),
-            kind: unit.target.kind().clone(),
+            kind: target.kind().clone(),
+            crate_types: target.is_native().then(|| target.rustc_crate_types()),
+            native_language: target.native_language(),
+            native_include_root: target.native_include_root(package_root),
+            native_sources_root: target.native_sources_root(package_root),
+            native_include_dirs: target.native_include_dirs().to_vec(),
+            native_defines: target.native_defines().to_vec(),
+            native_link_search: target.native_link_search().to_vec(),
+            native_link_libraries: target.native_link_libraries().to_vec(),
+            native_link_args: target.native_link_args().to_vec(),
         }
     }
 }

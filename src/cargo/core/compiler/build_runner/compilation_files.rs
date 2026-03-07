@@ -365,7 +365,15 @@ impl<'a, 'gctx: 'a> CompilationFiles<'a, 'gctx> {
         assert!(unit.artifact.is_true());
         let dir = self.pkg_dir(unit);
         let kind = match unit.target.kind() {
-            TargetKind::Bin => "bin",
+            TargetKind::Bin | TargetKind::NativeBin => "bin",
+            TargetKind::NativeLib(crate_type) => match crate_type {
+                CrateType::Cdylib => "cdylib",
+                CrateType::Staticlib => "staticlib",
+                invalid => unreachable!(
+                    "BUG: unexpected native library type {:?} for artifact output",
+                    invalid
+                ),
+            },
             TargetKind::Lib(lib_kinds) => match lib_kinds.as_slice() {
                 &[CrateType::Cdylib] => "cdylib",
                 &[CrateType::Staticlib] => "staticlib",
@@ -572,7 +580,11 @@ impl<'a, 'gctx: 'a> CompilationFiles<'a, 'gctx> {
                 }]
             }
             CompileMode::Test | CompileMode::Build | CompileMode::Check { .. } => {
-                let mut outputs = self.calc_outputs_rustc(unit, bcx)?;
+                let mut outputs = if unit.target.is_native() {
+                    self.calc_outputs_native(unit, bcx)?
+                } else {
+                    self.calc_outputs_rustc(unit, bcx)?
+                };
                 if bcx.build_config.sbom && bcx.gctx.cli_unstable().sbom {
                     let sbom_files: Vec<_> = outputs
                         .iter()
@@ -592,6 +604,104 @@ impl<'a, 'gctx: 'a> CompilationFiles<'a, 'gctx> {
         debug!("Target filenames: {:?}", ret);
 
         Ok(Arc::new(ret))
+    }
+
+    fn calc_outputs_native(
+        &self,
+        unit: &Unit,
+        bcx: &BuildContext<'a, 'gctx>,
+    ) -> CargoResult<Vec<OutputFile>> {
+        if unit.target.is_header_only() {
+            return Ok(vec![]);
+        }
+
+        let out_dir = self.output_dir(unit);
+        let meta = self.metas[unit];
+        let metadata = meta.c_extra_filename().map(|h| h.to_string());
+        let triple = bcx.target_data.short_name(&unit.kind);
+        let is_windows = triple.contains("windows");
+
+        let (base_name, file_name) = if unit.target.is_staticlib() {
+            let crate_name = unit.target.crate_name();
+            if is_windows {
+                let base_name = format!("{}.lib", crate_name);
+                let file_name = metadata
+                    .as_ref()
+                    .map(|meta| format!("{}-{}.lib", crate_name, meta))
+                    .unwrap_or_else(|| base_name.clone());
+                (base_name, file_name)
+            } else {
+                let base_name = format!("lib{}.a", crate_name);
+                let file_name = metadata
+                    .as_ref()
+                    .map(|meta| format!("lib{}-{}.a", crate_name, meta))
+                    .unwrap_or_else(|| base_name.clone());
+                (base_name, file_name)
+            }
+        } else if unit.target.is_cdylib() || unit.target.is_dylib() {
+            let crate_name = unit.target.crate_name();
+            let (prefix, suffix) = if is_windows {
+                ("", ".dll")
+            } else if triple.contains("apple") {
+                ("lib", ".dylib")
+            } else {
+                ("lib", ".so")
+            };
+            let base_name = format!("{prefix}{crate_name}{suffix}");
+            let file_name = metadata
+                .as_ref()
+                .map(|meta| format!("{prefix}{crate_name}-{meta}{suffix}"))
+                .unwrap_or_else(|| base_name.clone());
+            (base_name, file_name)
+        } else {
+            let bin_name = unit
+                .target
+                .binary_filename()
+                .unwrap_or_else(|| unit.target.name().to_string());
+            if is_windows {
+                let base_name = format!("{}.exe", bin_name);
+                let file_name = metadata
+                    .as_ref()
+                    .map(|meta| format!("{}-{}.exe", unit.target.name(), meta))
+                    .unwrap_or_else(|| base_name.clone());
+                (base_name, file_name)
+            } else {
+                let base_name = bin_name;
+                let file_name = metadata
+                    .as_ref()
+                    .map(|meta| format!("{}-{}", unit.target.name(), meta))
+                    .unwrap_or_else(|| base_name.clone());
+                (base_name, file_name)
+            }
+        };
+
+        let path = out_dir.join(file_name);
+        let hardlink = if unit.mode == CompileMode::Build
+            && !unit.artifact.is_true()
+            && (unit.target.is_bin() || self.roots.contains(unit))
+        {
+            Some(
+                self.layout(unit.kind)
+                    .artifact_dir()
+                    .expect("artifact-dir was not locked")
+                    .dest()
+                    .join(base_name),
+            )
+        } else {
+            None
+        };
+        let export_path = self.export_dir.as_ref().and_then(|export_dir| {
+            hardlink
+                .as_ref()
+                .map(|hardlink| export_dir.join(hardlink.file_name().unwrap()))
+        });
+
+        Ok(vec![OutputFile {
+            path,
+            hardlink,
+            export_path,
+            flavor: FileFlavor::Normal,
+        }])
     }
 
     /// Append the SBOM suffix to the file name.
