@@ -55,6 +55,7 @@ impl<'de> de::Deserialize<'de> for VersionControl {
 pub struct NewOptions {
     pub version_control: Option<VersionControl>,
     pub kind: NewProjectKind,
+    pub language: NewProjectLanguage,
     pub auto_detect_kind: bool,
     /// Absolute path to the directory for the new package
     pub path: PathBuf,
@@ -67,6 +68,27 @@ pub struct NewOptions {
 pub enum NewProjectKind {
     Bin,
     Lib,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NewProjectLanguage {
+    Rust,
+    C,
+    Cpp,
+}
+
+impl NewProjectLanguage {
+    fn default_extension(self) -> &'static str {
+        match self {
+            NewProjectLanguage::Rust => "rs",
+            NewProjectLanguage::C => "c",
+            NewProjectLanguage::Cpp => "cpp",
+        }
+    }
+
+    fn is_rust(self) -> bool {
+        self == NewProjectLanguage::Rust
+    }
 }
 
 impl NewProjectKind {
@@ -88,6 +110,7 @@ impl fmt::Display for NewProjectKind {
 struct SourceFileInformation {
     relative_path: String,
     bin: bool,
+    language: NewProjectLanguage,
 }
 
 struct MkOptions<'a> {
@@ -104,6 +127,7 @@ impl NewOptions {
         version_control: Option<VersionControl>,
         bin: bool,
         lib: bool,
+        language: NewProjectLanguage,
         path: PathBuf,
         name: Option<String>,
         edition: Option<String>,
@@ -120,6 +144,7 @@ impl NewOptions {
         let opts = NewOptions {
             version_control,
             kind,
+            language,
             auto_detect_kind,
             path,
             name,
@@ -315,9 +340,9 @@ fn detect_source_paths_and_types(
     let name = package_name;
 
     enum H {
-        Bin,
-        Lib,
-        Detect,
+        Bin(NewProjectLanguage),
+        Lib(NewProjectLanguage),
+        Detect(NewProjectLanguage),
     }
 
     struct Test {
@@ -325,32 +350,39 @@ fn detect_source_paths_and_types(
         handling: H,
     }
 
-    let tests = vec![
-        Test {
-            proposed_path: "src/main.rs".to_string(),
-            handling: H::Bin,
-        },
-        Test {
-            proposed_path: "main.rs".to_string(),
-            handling: H::Bin,
-        },
-        Test {
-            proposed_path: format!("src/{}.rs", name),
-            handling: H::Detect,
-        },
-        Test {
-            proposed_path: format!("{}.rs", name),
-            handling: H::Detect,
-        },
-        Test {
-            proposed_path: "src/lib.rs".to_string(),
-            handling: H::Lib,
-        },
-        Test {
-            proposed_path: "lib.rs".to_string(),
-            handling: H::Lib,
-        },
-    ];
+    let mut tests = Vec::new();
+    for (extension, language) in [
+        ("rs", NewProjectLanguage::Rust),
+        ("c", NewProjectLanguage::C),
+        ("cpp", NewProjectLanguage::Cpp),
+        ("cc", NewProjectLanguage::Cpp),
+        ("cxx", NewProjectLanguage::Cpp),
+    ] {
+        tests.push(Test {
+            proposed_path: format!("src/main.{extension}"),
+            handling: H::Bin(language),
+        });
+        tests.push(Test {
+            proposed_path: format!("main.{extension}"),
+            handling: H::Bin(language),
+        });
+        tests.push(Test {
+            proposed_path: format!("src/{name}.{extension}"),
+            handling: H::Detect(language),
+        });
+        tests.push(Test {
+            proposed_path: format!("{name}.{extension}"),
+            handling: H::Detect(language),
+        });
+        tests.push(Test {
+            proposed_path: format!("src/lib.{extension}"),
+            handling: H::Lib(language),
+        });
+        tests.push(Test {
+            proposed_path: format!("lib.{extension}"),
+            handling: H::Lib(language),
+        });
+    }
 
     for i in tests {
         let pp = i.proposed_path;
@@ -361,20 +393,23 @@ fn detect_source_paths_and_types(
         }
 
         let sfi = match i.handling {
-            H::Bin => SourceFileInformation {
+            H::Bin(language) => SourceFileInformation {
                 relative_path: pp,
                 bin: true,
+                language,
             },
-            H::Lib => SourceFileInformation {
+            H::Lib(language) => SourceFileInformation {
                 relative_path: pp,
                 bin: false,
+                language,
             },
-            H::Detect => {
+            H::Detect(language) => {
                 let content = paths::read(&path.join(pp.clone()))?;
-                let isbin = content.contains("fn main");
+                let isbin = source_contains_main(language, &content);
                 SourceFileInformation {
                     relative_path: pp,
                     bin: isbin,
+                    language,
                 }
             }
         };
@@ -417,18 +452,40 @@ cannot automatically generate Cargo.toml as the main target would be ambiguous",
     Ok(())
 }
 
-fn plan_new_source_file(bin: bool) -> SourceFileInformation {
+fn source_contains_main(language: NewProjectLanguage, content: &str) -> bool {
+    match language {
+        NewProjectLanguage::Rust => content.contains("fn main"),
+        NewProjectLanguage::C | NewProjectLanguage::Cpp => {
+            content.contains("main(") || content.contains("main (")
+        }
+    }
+}
+
+fn plan_new_source_file(bin: bool, language: NewProjectLanguage) -> SourceFileInformation {
+    let relative_path = if bin {
+        format!("src/main.{}", language.default_extension())
+    } else {
+        format!("src/lib.{}", language.default_extension())
+    };
+
     if bin {
         SourceFileInformation {
-            relative_path: "src/main.rs".to_string(),
+            relative_path,
             bin: true,
+            language,
         }
     } else {
         SourceFileInformation {
-            relative_path: "src/lib.rs".to_string(),
+            relative_path,
             bin: false,
+            language,
         }
     }
+}
+
+fn is_default_source_path(source_file: &SourceFileInformation) -> bool {
+    source_file.relative_path
+        == plan_new_source_file(source_file.bin, source_file.language).relative_path
 }
 
 fn calculate_new_project_kind(
@@ -474,7 +531,7 @@ pub fn new(opts: &NewOptions, gctx: &GlobalContext) -> CargoResult<()> {
         version_control: opts.version_control,
         path,
         name,
-        source_files: vec![plan_new_source_file(opts.kind.is_bin())],
+        source_files: vec![plan_new_source_file(opts.kind.is_bin(), opts.language)],
         edition: opts.edition.as_deref(),
         registry: opts.registry.as_deref(),
     };
@@ -523,7 +580,7 @@ pub fn init(opts: &NewOptions, gctx: &GlobalContext) -> CargoResult<NewProjectKi
     let has_bin = kind.is_bin();
 
     if src_paths_types.is_empty() {
-        src_paths_types.push(plan_new_source_file(has_bin));
+        src_paths_types.push(plan_new_source_file(has_bin, opts.language));
     } else if src_paths_types.len() == 1 && !src_paths_types.iter().any(|x| x.bin == has_bin) {
         // we've found the only file and it's not the type user wants. Change the type and warn
         let file_type = if src_paths_types[0].bin {
@@ -814,7 +871,7 @@ fn mk(gctx: &GlobalContext, opts: &MkOptions<'_>) -> CargoResult<()> {
     // Calculate what `[lib]` and `[[bin]]`s we need to append to `Cargo.toml`.
     for i in &opts.source_files {
         if i.bin {
-            if i.relative_path != "src/main.rs" {
+            if !is_default_source_path(i) {
                 let mut bin = toml_edit::Table::new();
                 bin["name"] = toml_edit::value(name);
                 bin["path"] = toml_edit::value(i.relative_path.clone());
@@ -826,7 +883,7 @@ fn mk(gctx: &GlobalContext, opts: &MkOptions<'_>) -> CargoResult<()> {
                     .expect("bin is an array of tables")
                     .push(bin);
             }
-        } else if i.relative_path != "src/lib.rs" {
+        } else if !is_default_source_path(i) {
             let mut lib = toml_edit::Table::new();
             lib["path"] = toml_edit::value(i.relative_path.clone());
             manifest["lib"] = toml_edit::Item::Table(lib);
@@ -899,14 +956,16 @@ fn mk(gctx: &GlobalContext, opts: &MkOptions<'_>) -> CargoResult<()> {
             paths::create_dir_all(src_dir)?;
         }
 
-        let default_file_content: &[u8] = if i.bin {
-            b"\
+        let default_file_content: &[u8] = match (i.language, i.bin) {
+            (NewProjectLanguage::Rust, true) => {
+                b"\
 fn main() {
     println!(\"Hello, world!\");
 }
 "
-        } else {
-            b"\
+            }
+            (NewProjectLanguage::Rust, false) => {
+                b"\
 pub fn add(left: u64, right: u64) -> u64 {
     left + right
 }
@@ -922,17 +981,54 @@ mod tests {
     }
 }
 "
+            }
+            (NewProjectLanguage::C, true) => {
+                b"\
+#include <stdio.h>
+
+int main(void) {
+    puts(\"Hello, world!\");
+    return 0;
+}
+"
+            }
+            (NewProjectLanguage::C, false) => {
+                b"\
+int add(int left, int right) {
+    return left + right;
+}
+"
+            }
+            (NewProjectLanguage::Cpp, true) => {
+                b"\
+#include <iostream>
+
+int main() {
+    std::cout << \"Hello, world!\" << std::endl;
+    return 0;
+}
+"
+            }
+            (NewProjectLanguage::Cpp, false) => {
+                b"\
+int add(int left, int right) {
+    return left + right;
+}
+"
+            }
         };
 
         if !path_of_source_file.is_file() {
             paths::write(&path_of_source_file, default_file_content)?;
 
             // Format the newly created source file
-            if let Err(e) = cargo_util::ProcessBuilder::new("rustfmt")
-                .arg(&path_of_source_file)
-                .exec_with_output()
-            {
-                tracing::warn!("failed to call rustfmt: {:#}", e);
+            if i.language.is_rust() {
+                if let Err(e) = cargo_util::ProcessBuilder::new("rustfmt")
+                    .arg(&path_of_source_file)
+                    .exec_with_output()
+                {
+                    tracing::warn!("failed to call rustfmt: {:#}", e);
+                }
             }
         }
     }

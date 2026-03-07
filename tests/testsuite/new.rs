@@ -89,6 +89,52 @@ fn simple_bin() {
 }
 
 #[cargo_test]
+fn simple_bin_c() {
+    cargo_process("new --bin --lang c foo --vcs none --edition 2024")
+        .with_stderr_data(str![[r#"
+[CREATING] binary (application) `foo` package
+[NOTE] see more `Cargo.toml` keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+"#]])
+        .run();
+
+    assert!(paths::root().join("foo/src/main.c").is_file());
+    assert!(!paths::root().join("foo/src/main.rs").is_file());
+
+    let main = paths::root().join("foo/src/main.c");
+    let contents = fs::read_to_string(&main).unwrap();
+    assert_eq!(
+        contents,
+        "#include <stdio.h>\n\nint main(void) {\n    puts(\"Hello, world!\");\n    return 0;\n}\n"
+    );
+
+    cargo_process("build").cwd(&paths::root().join("foo")).run();
+}
+
+#[cargo_test]
+fn simple_lib_cpp() {
+    cargo_process("new --lib --lang c++ foo --vcs none --edition 2024")
+        .with_stderr_data(str![[r#"
+[CREATING] library `foo` package
+[NOTE] see more `Cargo.toml` keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+"#]])
+        .run();
+
+    assert!(paths::root().join("foo/src/lib.cpp").is_file());
+    assert!(!paths::root().join("foo/src/lib.rs").is_file());
+
+    let lib = paths::root().join("foo/src/lib.cpp");
+    let contents = fs::read_to_string(&lib).unwrap();
+    assert_eq!(
+        contents,
+        "int add(int left, int right) {\n    return left + right;\n}\n"
+    );
+
+    cargo_process("build").cwd(&paths::root().join("foo")).run();
+}
+
+#[cargo_test]
 fn both_lib_and_bin() {
     cargo_process("new --lib --bin foo")
         .with_status(101)

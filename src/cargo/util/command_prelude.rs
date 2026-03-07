@@ -4,7 +4,9 @@ use crate::core::compiler::{BuildConfig, CompileKind, MessageFormat, RustcTarget
 use crate::core::resolver::{CliFeatures, ForceAllTargets, HasDevUnits};
 use crate::core::{Edition, Package, TargetKind, Workspace, profiles::Profiles, shell};
 use crate::ops::registry::RegistryOrIndex;
-use crate::ops::{self, CompileFilter, CompileOptions, NewOptions, Packages, VersionControl};
+use crate::ops::{
+    self, CompileFilter, CompileOptions, NewOptions, NewProjectLanguage, Packages, VersionControl,
+};
 use crate::util::important_paths::find_root_manifest_for_wd;
 use crate::util::interning::InternedString;
 use crate::util::is_rustup;
@@ -426,6 +428,14 @@ pub trait CommandExt: Sized {
         )
         ._arg(flag("bin", "Use a binary (application) template [default]"))
         ._arg(flag("lib", "Use a library template"))
+        ._arg(
+            opt(
+                "lang",
+                "Use the given implementation language for the generated target",
+            )
+            .value_name("LANG")
+            .value_parser(["rust", "c", "c++"]),
+        )
         ._arg(
             opt("edition", "Edition to set for the crate generated")
                 .value_parser(Edition::CLI_VALUES)
@@ -898,10 +908,17 @@ Run `{cmd}` to see possible targets."
             "none" => VersionControl::NoVcs,
             vcs => panic!("Impossible vcs: {:?}", vcs),
         });
+        let language = match self._value_of("lang") {
+            Some("rust") | None => NewProjectLanguage::Rust,
+            Some("c") => NewProjectLanguage::C,
+            Some("c++") => NewProjectLanguage::Cpp,
+            Some(lang) => panic!("Impossible language: {:?}", lang),
+        };
         NewOptions::new(
             vcs,
             self.flag("bin"),
             self.flag("lib"),
+            language,
             self.value_of_path("path", gctx).unwrap(),
             self._value_of("name").map(|s| s.to_string()),
             self._value_of("edition").map(|s| s.to_string()),
@@ -1182,7 +1199,11 @@ fn get_crate_candidates(kind: TargetKind) -> CargoResult<Vec<clap_complete::Comp
     let targets = ws
         .members()
         .flat_map(|pkg| pkg.targets().into_iter().cloned().map(|t| (pkg.name(), t)))
-        .filter(|(_, target)| *target.kind() == kind)
+        .filter(|(_, target)| match kind {
+            TargetKind::Bin => target.is_bin(),
+            TargetKind::Lib(_) => target.is_lib(),
+            _ => *target.kind() == kind,
+        })
         .map(|(pkg_name, target)| {
             let order = if ws.current_opt().map(|p| p.name()) == Some(pkg_name) {
                 0

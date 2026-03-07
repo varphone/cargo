@@ -1,7 +1,7 @@
 <svg width="740px" height="164px" xmlns="http://www.w3.org/2000/svg">
   <style>
     .fg { fill: #AAAAAA }
-    .bg { background: #000000 }
+    .bg { fill: #000000 }
     .fg-bright-cyan { fill: #55FFFF }
     .fg-bright-green { fill: #55FF55 }
     .fg-bright-red { fill: #FF5555 }
@@ -26,11 +26,11 @@
 </tspan>
     <tspan x="10px" y="46px">
 </tspan>
-    <tspan x="10px" y="64px"><tspan>  </tspan><tspan class="fg-bright-cyan bold">tip:</tspan><tspan> to pass '</tspan><tspan class="fg-yellow bold">--flag</tspan><tspan>' as a value, use '</tspan><tspan class="fg-bright-cyan bold">-- --flag</tspan><tspan>'</tspan>
+    <tspan x="10px" y="64px"><tspan>  </tspan><tspan class="fg-bright-cyan bold">tip:</tspan><tspan> a similar argument exists: '</tspan><tspan class="fg-bright-cyan bold">--lang</tspan><tspan>'</tspan>
 </tspan>
     <tspan x="10px" y="82px">
 </tspan>
-    <tspan x="10px" y="100px"><tspan class="fg-bright-green bold">Usage:</tspan><tspan> </tspan><tspan class="fg-bright-cyan bold">cargo[EXE] init</tspan><tspan> </tspan><tspan class="fg-cyan">&lt;PATH&gt;</tspan>
+    <tspan x="10px" y="100px"><tspan class="fg-bright-green bold">Usage:</tspan><tspan> </tspan><tspan class="fg-bright-cyan bold">cargo[EXE] init</tspan><tspan> </tspan><tspan class="fg-bright-cyan bold">--lang</tspan><tspan class="fg-cyan"> </tspan><tspan class="fg-cyan">&lt;LANG&gt;</tspan><tspan> </tspan><tspan class="fg-cyan">&lt;PATH&gt;</tspan>
 </tspan>
     <tspan x="10px" y="118px">
 </tspan>
