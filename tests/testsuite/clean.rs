@@ -1,6 +1,7 @@
 //! Tests for the `cargo clean` command.
 
 use crate::prelude::*;
+use crate::utils::tools;
 use cargo_test_support::compare::assert_e2e;
 use cargo_test_support::registry::Package;
 use cargo_test_support::str;
@@ -622,6 +623,44 @@ fn clean_remove_rlib_rmeta() {
     p.cargo("clean -p foo").run();
     assert!(!p.target_debug_dir().join("libfoo.rlib").exists());
     assert!(!rmeta.exists());
+}
+
+#[cargo_test]
+fn clean_package_removes_native_outputs() {
+    let tool = tools::fake_native_tool();
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [package]
+                name = "foo"
+                version = "0.0.1"
+                edition = "2024"
+            "#,
+        )
+        .file("src/lib.cpp", "int native_answer() { return 42; }\n")
+        .file(
+            "src/main.cpp",
+            "int native_answer();\nint main() { return native_answer(); }\n",
+        )
+        .build();
+
+    p.cargo("build").env("CXX", &tool).env("AR", &tool).run();
+
+    let exe = p.bin("foo");
+    let lib = if cfg!(windows) {
+        p.target_debug_dir().join("foo.lib")
+    } else {
+        p.target_debug_dir().join("libfoo.a")
+    };
+
+    assert!(exe.is_file());
+    assert!(lib.is_file());
+
+    p.cargo("clean -p foo").run();
+
+    assert!(!exe.exists());
+    assert!(!lib.exists());
 }
 
 #[cargo_test]

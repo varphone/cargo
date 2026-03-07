@@ -2002,6 +2002,43 @@ fn doc_json_artifacts() {
 }
 
 #[cargo_test]
+fn doc_native_only_package_is_a_no_op_for_cpp_targets() {
+    let tool = tools::fake_native_tool();
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [package]
+                name = "foo"
+                version = "0.0.1"
+                edition = "2024"
+            "#,
+        )
+        .file("src/lib.cpp", "int native_answer() { return 42; }\n")
+        .file(
+            "src/main.cpp",
+            "int native_answer();\nint main() { return native_answer(); }\n",
+        )
+        .build();
+    let log_path = p.root().join("fake-native-tool.log");
+
+    p.cargo("doc")
+        .env("CXX", &tool)
+        .env("AR", &tool)
+        .env("FAKE_NATIVE_TOOL_LOG", &log_path)
+        .run();
+
+    assert!(
+        !log_path.exists(),
+        "cargo doc should not invoke the native toolchain"
+    );
+    assert!(
+        !p.root().join("target/doc/foo/index.html").exists(),
+        "cargo doc should not generate rustdoc output for a native-only package"
+    );
+}
+
+#[cargo_test]
 fn short_message_format() {
     let p = project().file("src/lib.rs", BAD_INTRA_LINK_LIB).build();
     p.cargo("doc --message-format=short")

@@ -9,6 +9,7 @@ use std::thread;
 
 use crate::prelude::*;
 use crate::utils::cargo_process;
+use crate::utils::tools;
 use cargo_test_support::compare::assert_e2e;
 use cargo_test_support::cross_compile;
 use cargo_test_support::git;
@@ -1078,6 +1079,75 @@ foo v0.2.0 ([ROOT]/foo2):
 }
 
 #[cargo_test]
+fn install_force_native_cpp_bin() {
+    let tool = tools::fake_native_tool();
+
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [package]
+                name = "foo"
+                version = "0.0.1"
+                edition = "2024"
+            "#,
+        )
+        .file("src/main.cpp", "int main() { return 0; }\n")
+        .build();
+
+    cargo_process("install --path")
+        .arg(p.root())
+        .env("CXX", &tool)
+        .env("AR", &tool)
+        .run();
+
+    let p = project()
+        .at("foo-native2")
+        .file(
+            "Cargo.toml",
+            r#"
+                [package]
+                name = "foo"
+                version = "0.2.0"
+                edition = "2024"
+            "#,
+        )
+        .file("src/main.cpp", "int main() { return 0; }\n")
+        .build();
+
+    cargo_process("install --force --path")
+        .arg(p.root())
+        .env("CXX", &tool)
+        .env("AR", &tool)
+        .with_stderr_data(str![[r#"
+[INSTALLING] foo v0.2.0 ([ROOT]/foo-native2)
+[COMPILING] foo v0.2.0 ([ROOT]/foo-native2)
+[FINISHED] `release` profile [optimized] target(s) in [ELAPSED]s
+[REPLACING] [ROOT]/home/.cargo/bin/foo[EXE]
+[REPLACED] package `foo v0.0.1 ([ROOT]/foo)` with `foo v0.2.0 ([ROOT]/foo-native2)` (executable `foo[EXE]`)
+[WARNING] be sure to add `[ROOT]/home/.cargo/bin` to your PATH to be able to run the installed binaries
+
+"#]])
+        .run();
+
+    cargo_process("install --list")
+        .with_stdout_data(str![[r#"
+foo v0.2.0 ([ROOT]/foo-native2):
+    foo[EXE]
+
+"#]])
+        .run();
+
+    let foo_bin = paths::cargo_home().join("bin").join(exe("foo"));
+    let output = ProcessBuilder::new(foo_bin).exec_with_output().unwrap();
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(
+        stdout.contains("fake-native-runtime"),
+        "expected replaced native executable to run, stdout was: {stdout}"
+    );
+}
+
+#[cargo_test]
 fn install_force_partial_overlap() {
     let p = project()
         .file("src/bin/foo-bin1.rs", "fn main() {}")
@@ -1120,6 +1190,86 @@ foo v0.2.0 ([ROOT]/foo2):
 }
 
 #[cargo_test]
+fn install_force_partial_overlap_native_cpp_bins() {
+    let tool = tools::fake_native_tool();
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [package]
+                name = "foo"
+                version = "0.0.1"
+                edition = "2024"
+            "#,
+        )
+        .file("src/bin/foo-bin1.cpp", "int main() { return 0; }\n")
+        .file("src/bin/foo-bin2.cpp", "int main() { return 0; }\n")
+        .build();
+
+    cargo_process("install --path")
+        .arg(p.root())
+        .env("CXX", &tool)
+        .env("AR", &tool)
+        .run();
+
+    let p = project()
+        .at("foo-native-overlap2")
+        .file(
+            "Cargo.toml",
+            r#"
+                [package]
+                name = "foo"
+                version = "0.2.0"
+                edition = "2024"
+            "#,
+        )
+        .file("src/bin/foo-bin2.cpp", "int main() { return 0; }\n")
+        .file("src/bin/foo-bin3.cpp", "int main() { return 0; }\n")
+        .build();
+
+    cargo_process("install --force --path")
+        .arg(p.root())
+        .env("CXX", &tool)
+        .env("AR", &tool)
+        .with_stderr_data(str![[r#"
+[INSTALLING] foo v0.2.0 ([ROOT]/foo-native-overlap2)
+[COMPILING] foo v0.2.0 ([ROOT]/foo-native-overlap2)
+[FINISHED] `release` profile [optimized] target(s) in [ELAPSED]s
+[INSTALLING] [ROOT]/home/.cargo/bin/foo-bin3[EXE]
+[REPLACING] [ROOT]/home/.cargo/bin/foo-bin2[EXE]
+[REMOVING] executable `[ROOT]/home/.cargo/bin/foo-bin1[EXE]` from previous version foo v0.0.1 ([ROOT]/foo)
+[INSTALLED] package `foo v0.2.0 ([ROOT]/foo-native-overlap2)` (executable `foo-bin3[EXE]`)
+[REPLACED] package `foo v0.0.1 ([ROOT]/foo)` with `foo v0.2.0 ([ROOT]/foo-native-overlap2)` (executable `foo-bin2[EXE]`)
+[WARNING] be sure to add `[ROOT]/home/.cargo/bin` to your PATH to be able to run the installed binaries
+
+"#]])
+        .run();
+
+    cargo_process("install --list")
+        .with_stdout_data(str![[r#"
+foo v0.2.0 ([ROOT]/foo-native-overlap2):
+    foo-bin2[EXE]
+    foo-bin3[EXE]
+
+"#]])
+        .run();
+
+    assert_has_not_installed_exe(paths::cargo_home(), "foo-bin1");
+    assert_has_installed_exe(paths::cargo_home(), "foo-bin2");
+    assert_has_installed_exe(paths::cargo_home(), "foo-bin3");
+
+    for bin_name in ["foo-bin2", "foo-bin3"] {
+        let bin = paths::cargo_home().join("bin").join(exe(bin_name));
+        let output = ProcessBuilder::new(bin).exec_with_output().unwrap();
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        assert!(
+            stdout.contains("fake-native-runtime"),
+            "expected installed native executable `{bin_name}` to run, stdout was: {stdout}"
+        );
+    }
+}
+
+#[cargo_test]
 fn install_force_bin() {
     let p = project()
         .file("src/bin/foo-bin1.rs", "fn main() {}")
@@ -1157,6 +1307,81 @@ foo v0.2.0 ([ROOT]/foo2):
 
 "#]])
         .run();
+}
+
+#[cargo_test]
+fn install_force_bin_native_cpp() {
+    let tool = tools::fake_native_tool();
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [package]
+                name = "foo"
+                version = "0.0.1"
+                edition = "2024"
+            "#,
+        )
+        .file("src/bin/foo-bin1.cpp", "int main() { return 0; }\n")
+        .file("src/bin/foo-bin2.cpp", "int main() { return 0; }\n")
+        .build();
+
+    cargo_process("install --path")
+        .arg(p.root())
+        .env("CXX", &tool)
+        .env("AR", &tool)
+        .run();
+
+    let p = project()
+        .at("foo-native-bin-force2")
+        .file(
+            "Cargo.toml",
+            r#"
+                [package]
+                name = "foo"
+                version = "0.2.0"
+                edition = "2024"
+            "#,
+        )
+        .file("src/bin/foo-bin1.cpp", "int main() { return 0; }\n")
+        .file("src/bin/foo-bin2.cpp", "int main() { return 0; }\n")
+        .build();
+
+    cargo_process("install --force --bin foo-bin2 --path")
+        .arg(p.root())
+        .env("CXX", &tool)
+        .env("AR", &tool)
+        .with_stderr_data(str![[r#"
+[INSTALLING] foo v0.2.0 ([ROOT]/foo-native-bin-force2)
+[COMPILING] foo v0.2.0 ([ROOT]/foo-native-bin-force2)
+[FINISHED] `release` profile [optimized] target(s) in [ELAPSED]s
+[REPLACING] [ROOT]/home/.cargo/bin/foo-bin2[EXE]
+[REPLACED] package `foo v0.0.1 ([ROOT]/foo)` with `foo v0.2.0 ([ROOT]/foo-native-bin-force2)` (executable `foo-bin2[EXE]`)
+[WARNING] be sure to add `[ROOT]/home/.cargo/bin` to your PATH to be able to run the installed binaries
+
+"#]])
+        .run();
+
+    cargo_process("install --list")
+        .with_stdout_data(str![[r#"
+foo v0.0.1 ([ROOT]/foo):
+    foo-bin1[EXE]
+foo v0.2.0 ([ROOT]/foo-native-bin-force2):
+    foo-bin2[EXE]
+
+"#]])
+        .run();
+
+    assert_has_installed_exe(paths::cargo_home(), "foo-bin1");
+    assert_has_installed_exe(paths::cargo_home(), "foo-bin2");
+
+    let foo_bin2 = paths::cargo_home().join("bin").join(exe("foo-bin2"));
+    let output = ProcessBuilder::new(foo_bin2).exec_with_output().unwrap();
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(
+        stdout.contains("fake-native-runtime"),
+        "expected replaced native executable to run, stdout was: {stdout}"
+    );
 }
 
 #[cargo_test]
@@ -1293,6 +1518,49 @@ fn uninstall_pkg_does_not_exist() {
 }
 
 #[cargo_test]
+fn uninstall_pkg_does_not_exist_with_native_cpp_install_keeps_existing_bin() {
+    let tool = tools::fake_native_tool();
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [package]
+                name = "foo"
+                version = "0.0.1"
+                edition = "2024"
+            "#,
+        )
+        .file("src/main.cpp", "int main() { return 0; }\n")
+        .build();
+
+    cargo_process("install --path")
+        .arg(p.root())
+        .env("CXX", &tool)
+        .env("AR", &tool)
+        .run();
+    assert_has_installed_exe(paths::cargo_home(), "foo");
+
+    let err = cargo_process("uninstall bar")
+        .exec_with_output()
+        .unwrap_err();
+    let err = err.downcast::<ProcessError>().unwrap();
+    let stderr = String::from_utf8(err.stderr.unwrap()).unwrap();
+    assert!(
+        stderr.contains("package ID specification `bar` did not match any packages"),
+        "expected missing package uninstall error, stderr was: {stderr}"
+    );
+
+    assert_has_installed_exe(paths::cargo_home(), "foo");
+    let foo_bin = paths::cargo_home().join("bin").join(exe("foo"));
+    let output = ProcessBuilder::new(foo_bin).exec_with_output().unwrap();
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(
+        stdout.contains("fake-native-runtime"),
+        "expected installed native executable to remain runnable, stdout was: {stdout}"
+    );
+}
+
+#[cargo_test]
 fn uninstall_bin_does_not_exist() {
     pkg("foo", "0.0.1");
 
@@ -1304,6 +1572,44 @@ fn uninstall_bin_does_not_exist() {
 
 "#]])
         .run();
+}
+
+#[cargo_test]
+fn uninstall_bin_does_not_exist_native_cpp() {
+    let tool = tools::fake_native_tool();
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [package]
+                name = "foo"
+                version = "0.0.1"
+                edition = "2024"
+            "#,
+        )
+        .file("src/bin/foo.cpp", "int main() { return 0; }\n")
+        .file("src/bin/bar.cpp", "int main() { return 0; }\n")
+        .build();
+
+    cargo_process("install --path")
+        .arg(p.root())
+        .env("CXX", &tool)
+        .env("AR", &tool)
+        .run();
+
+    let err = cargo_process("uninstall foo --bin=baz")
+        .exec_with_output()
+        .unwrap_err();
+    let err = err.downcast::<ProcessError>().unwrap();
+    let stderr = String::from_utf8(err.stderr.unwrap()).unwrap();
+    let expected = format!(
+        "binary `{}` not installed as part of `foo v0.0.1",
+        exe("baz")
+    );
+    assert!(
+        stderr.contains(&expected),
+        "expected missing-bin uninstall error, stderr was: {stderr}"
+    );
 }
 
 #[cargo_test]
@@ -1326,6 +1632,74 @@ fn uninstall_piecemeal() {
 
     assert_has_installed_exe(paths::cargo_home(), "foo");
     assert_has_not_installed_exe(paths::cargo_home(), "bar");
+
+    cargo_process("uninstall foo --bin=foo")
+        .with_stderr_data(str![[r#"
+[REMOVING] [ROOT]/home/.cargo/bin/foo[EXE]
+
+"#]])
+        .run();
+    assert_has_not_installed_exe(paths::cargo_home(), "foo");
+
+    cargo_process("uninstall foo")
+        .with_status(101)
+        .with_stderr_data(str![[r#"
+[ERROR] package ID specification `foo` did not match any packages
+
+"#]])
+        .run();
+}
+
+#[cargo_test]
+fn uninstall_piecemeal_native_cpp() {
+    let tool = tools::fake_native_tool();
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [package]
+                name = "foo"
+                version = "0.0.1"
+                edition = "2024"
+            "#,
+        )
+        .file("src/bin/foo.cpp", "int main() { return 0; }\n")
+        .file("src/bin/bar.cpp", "int main() { return 0; }\n")
+        .build();
+
+    cargo_process("install --path")
+        .arg(p.root())
+        .env("CXX", &tool)
+        .env("AR", &tool)
+        .run();
+    assert_has_installed_exe(paths::cargo_home(), "foo");
+    assert_has_installed_exe(paths::cargo_home(), "bar");
+
+    cargo_process("uninstall foo --bin=bar")
+        .with_stderr_data(str![[r#"
+[REMOVING] [ROOT]/home/.cargo/bin/bar[EXE]
+
+"#]])
+        .run();
+
+    cargo_process("install --list")
+        .with_stdout_data(str![[r#"
+foo v0.0.1 ([ROOT]/foo):
+    foo[EXE]
+
+"#]])
+        .run();
+
+    assert_has_installed_exe(paths::cargo_home(), "foo");
+    assert_has_not_installed_exe(paths::cargo_home(), "bar");
+
+    let foo_bin = paths::cargo_home().join("bin").join(exe("foo"));
+    let output = ProcessBuilder::new(foo_bin).exec_with_output().unwrap();
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(
+        stdout.contains("fake-native-runtime"),
+        "expected remaining native executable to run, stdout was: {stdout}"
+    );
 
     cargo_process("uninstall foo --bin=foo")
         .with_stderr_data(str![[r#"
@@ -1427,8 +1801,82 @@ fn uninstall_cwd() {
 }
 
 #[cargo_test]
+fn uninstall_cwd_native_cpp() {
+    let tool = tools::fake_native_tool();
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [package]
+                name = "foo"
+                version = "0.0.1"
+                edition = "2024"
+            "#,
+        )
+        .file("src/main.cpp", "int main() { return 0; }\n")
+        .build();
+
+    p.cargo("install --path .")
+        .env("CXX", &tool)
+        .env("AR", &tool)
+        .with_stderr_data(str![[r#"
+[INSTALLING] foo v0.0.1 ([ROOT]/foo)
+[COMPILING] foo v0.0.1 ([ROOT]/foo)
+[FINISHED] `release` profile [optimized] target(s) in [ELAPSED]s
+[INSTALLING] [ROOT]/home/.cargo/bin/foo[EXE]
+[INSTALLED] package `foo v0.0.1 ([ROOT]/foo)` (executable `foo[EXE]`)
+[WARNING] be sure to add `[ROOT]/home/.cargo/bin` to your PATH to be able to run the installed binaries
+
+"#]])
+        .run();
+    assert_has_installed_exe(paths::cargo_home(), "foo");
+
+    let foo_bin = paths::cargo_home().join("bin").join(exe("foo"));
+    let output = ProcessBuilder::new(foo_bin).exec_with_output().unwrap();
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(
+        stdout.contains("fake-native-runtime"),
+        "expected installed native executable to run, stdout was: {stdout}"
+    );
+
+    p.cargo("uninstall")
+        .with_stdout_data("")
+        .with_stderr_data(str![[r#"
+[REMOVING] [ROOT]/home/.cargo/bin/foo[EXE]
+
+"#]])
+        .run();
+    assert_has_not_installed_exe(paths::cargo_home(), "foo");
+}
+
+#[cargo_test]
 fn uninstall_cwd_not_installed() {
     let p = project().file("src/main.rs", "fn main() {}").build();
+    p.cargo("uninstall")
+        .with_status(101)
+        .with_stdout_data("")
+        .with_stderr_data(str![[r#"
+[ERROR] package `foo v0.0.1 ([ROOT]/foo)` is not installed
+
+"#]])
+        .run();
+}
+
+#[cargo_test]
+fn uninstall_cwd_not_installed_native_cpp() {
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [package]
+                name = "foo"
+                version = "0.0.1"
+                edition = "2024"
+            "#,
+        )
+        .file("src/main.cpp", "int main() { return 0; }\n")
+        .build();
+
     p.cargo("uninstall")
         .with_status(101)
         .with_stdout_data("")
@@ -1444,13 +1892,7 @@ fn uninstall_cwd_no_project() {
     cargo_process("uninstall")
         .with_status(101)
         .with_stdout_data("")
-        .with_stderr_data(str![[r#"
-[ERROR] failed to read `[ROOT]/Cargo.toml`
-
-Caused by:
-  [NOT_FOUND]
-
-"#]])
+        .with_stderr_contains("[ERROR] failed to read `[ROOT]/Cargo.toml`")
         .run();
 }
 
@@ -1754,6 +2196,316 @@ fn install_target_native() {
 }
 
 #[cargo_test]
+fn install_registry_native_cpp_bin() {
+    let tool = tools::fake_native_tool();
+    Package::new("foo", "1.0.0")
+        .file("src/main.cpp", "int main() { return 0; }\n")
+        .publish();
+
+    cargo_process("install foo")
+        .env("CXX", &tool)
+        .env("AR", &tool)
+        .run();
+
+    assert_has_installed_exe(paths::cargo_home(), "foo");
+
+    let foo_bin = paths::cargo_home().join("bin").join(exe("foo"));
+    let output = ProcessBuilder::new(foo_bin).exec_with_output().unwrap();
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(
+        stdout.contains("fake-native-runtime"),
+        "expected installed registry native executable to run, stdout was: {stdout}"
+    );
+}
+
+#[cargo_test]
+fn uninstall_registry_native_cpp_bin() {
+    let tool = tools::fake_native_tool();
+    Package::new("foo", "1.0.0")
+        .file("src/main.cpp", "int main() { return 0; }\n")
+        .publish();
+
+    cargo_process("install foo")
+        .env("CXX", &tool)
+        .env("AR", &tool)
+        .run();
+    assert_has_installed_exe(paths::cargo_home(), "foo");
+
+    cargo_process("uninstall foo")
+        .with_stderr_data(str![[r#"
+[REMOVING] [ROOT]/home/.cargo/bin/foo[EXE]
+
+"#]])
+        .run();
+    assert_has_not_installed_exe(paths::cargo_home(), "foo");
+}
+
+#[cargo_test]
+fn install_registry_native_cpp_bin_reports_json_target_hints() {
+    let tool = tools::fake_native_tool();
+    Package::new("foo", "1.0.0")
+        .file(
+            "Cargo.toml",
+            r#"
+                [package]
+                name = "foo"
+                version = "1.0.0"
+                edition = "2024"
+
+                [lib]
+                path = "src/lib.cpp"
+                crate-type = ["staticlib"]
+                native-include-dirs = ["native/private"]
+                native-defines = ["INSTALL_JSON_DEFINE=1"]
+
+                [[bin]]
+                name = "foo"
+                path = "src/main.cpp"
+                native-link-search = ["native/libs"]
+                native-link-libraries = ["install_json_dep"]
+                native-link-args = ["-Wl,--install-json-link-arg"]
+            "#,
+        )
+        .file("include/answer.hpp", "int native_answer();\n")
+        .file("native/private/detail/private.hpp", "inline int private_answer() { return 0; }\n")
+        .file("native/libs/.keep", "")
+        .file(
+            "src/lib.cpp",
+            "#include <answer.hpp>\n#include <detail/private.hpp>\n#ifndef INSTALL_JSON_DEFINE\n#error missing define\n#endif\nint native_answer() { return private_answer(); }\n",
+        )
+        .file(
+            "src/main.cpp",
+            "int native_answer();\nint main() { return native_answer(); }\n",
+        )
+        .publish();
+
+    let output = cargo_process("install foo --message-format=json")
+        .env("CXX", &tool)
+        .env("AR", &tool)
+        .run();
+
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let messages = stdout
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+        .collect::<Vec<_>>();
+
+    let native_lib = messages
+        .iter()
+        .find(|message| {
+            message["reason"] == serde_json::json!("compiler-artifact")
+                && message["target"]["crate_types"] == serde_json::json!(["staticlib"])
+        })
+        .unwrap();
+    assert_eq!(native_lib["target"]["kind"], serde_json::json!(["lib"]));
+    assert_eq!(
+        native_lib["target"]["native_language"],
+        serde_json::json!("c++")
+    );
+    assert_eq!(
+        native_lib["target"]["native_defines"],
+        serde_json::json!(["INSTALL_JSON_DEFINE=1"])
+    );
+    let native_include_dirs = native_lib["target"]["native_include_dirs"]
+        .as_array()
+        .unwrap();
+    assert_eq!(native_include_dirs.len(), 1);
+
+    let native_bin = messages
+        .iter()
+        .find(|message| {
+            message["reason"] == serde_json::json!("compiler-artifact")
+                && message["target"]["crate_types"] == serde_json::json!(["bin"])
+        })
+        .unwrap();
+    assert_eq!(native_bin["target"]["kind"], serde_json::json!(["bin"]));
+    assert_eq!(
+        native_bin["target"]["native_language"],
+        serde_json::json!("c++")
+    );
+    assert_eq!(
+        native_bin["target"]["native_link_libraries"],
+        serde_json::json!(["install_json_dep"])
+    );
+    assert_eq!(
+        native_bin["target"]["native_link_args"],
+        serde_json::json!(["-Wl,--install-json-link-arg"])
+    );
+}
+
+#[cargo_test]
+fn install_git_native_cpp_bin() {
+    let tool = tools::fake_native_tool();
+    let p = git::repo(&paths::root().join("foo"))
+        .file(
+            "Cargo.toml",
+            r#"
+                [package]
+                name = "foo"
+                version = "0.1.0"
+                edition = "2024"
+            "#,
+        )
+        .file("src/main.cpp", "int main() { return 0; }\n")
+        .build();
+
+    cargo_process("install --git")
+        .arg(p.url().to_string())
+        .arg("foo")
+        .env("CXX", &tool)
+        .env("AR", &tool)
+        .run();
+
+    assert_has_installed_exe(paths::cargo_home(), "foo");
+
+    let foo_bin = paths::cargo_home().join("bin").join(exe("foo"));
+    let output = ProcessBuilder::new(foo_bin).exec_with_output().unwrap();
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(
+        stdout.contains("fake-native-runtime"),
+        "expected installed git native executable to run, stdout was: {stdout}"
+    );
+}
+
+#[cargo_test]
+fn uninstall_git_native_cpp_bin() {
+    let tool = tools::fake_native_tool();
+    let p = git::repo(&paths::root().join("foo"))
+        .file(
+            "Cargo.toml",
+            r#"
+                [package]
+                name = "foo"
+                version = "0.1.0"
+                edition = "2024"
+            "#,
+        )
+        .file("src/main.cpp", "int main() { return 0; }\n")
+        .build();
+
+    cargo_process("install --git")
+        .arg(p.url().to_string())
+        .arg("foo")
+        .env("CXX", &tool)
+        .env("AR", &tool)
+        .run();
+    assert_has_installed_exe(paths::cargo_home(), "foo");
+
+    cargo_process("uninstall foo")
+        .with_stderr_data(str![[r#"
+[REMOVING] [ROOT]/home/.cargo/bin/foo[EXE]
+
+"#]])
+        .run();
+    assert_has_not_installed_exe(paths::cargo_home(), "foo");
+}
+
+#[cargo_test]
+fn install_path_native_cpp_bin_with_root() {
+    let tool = tools::fake_native_tool();
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [package]
+                name = "foo"
+                version = "0.1.0"
+                edition = "2024"
+            "#,
+        )
+        .file("src/main.cpp", "int main() { return 0; }\n")
+        .build();
+
+    let install_root = p.root().join("native-root");
+    cargo_process("install --path")
+        .arg(p.root())
+        .arg("--root")
+        .arg(&install_root)
+        .env("CXX", &tool)
+        .env("AR", &tool)
+        .run();
+
+    assert_has_installed_exe(&install_root, "foo");
+
+    let foo_bin = install_root.join("bin").join(exe("foo"));
+    let output = ProcessBuilder::new(foo_bin).exec_with_output().unwrap();
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(
+        stdout.contains("fake-native-runtime"),
+        "expected installed native executable in custom root to run, stdout was: {stdout}"
+    );
+}
+
+#[cargo_test]
+fn uninstall_path_native_cpp_bin_with_root() {
+    let tool = tools::fake_native_tool();
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [package]
+                name = "foo"
+                version = "0.1.0"
+                edition = "2024"
+            "#,
+        )
+        .file("src/main.cpp", "int main() { return 0; }\n")
+        .build();
+
+    p.cargo("install --path . --root native-root")
+        .env("CXX", &tool)
+        .env("AR", &tool)
+        .run();
+
+    let install_root = p.root().join("native-root");
+    assert_has_installed_exe(&install_root, "foo");
+
+    p.cargo("uninstall foo --root native-root")
+        .with_stdout_data("")
+        .with_stderr_data(str![[r#"
+[REMOVING] native-root/bin/foo[EXE]
+
+"#]])
+        .run();
+
+    assert_has_not_installed_exe(&install_root, "foo");
+}
+
+#[cargo_test]
+fn install_path_native_cpp_bin() {
+    let tool = tools::fake_native_tool();
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [package]
+                name = "foo"
+                version = "0.1.0"
+                edition = "2024"
+            "#,
+        )
+        .file("src/main.cpp", "int main() { return 0; }\n")
+        .build();
+
+    cargo_process("install --path")
+        .arg(p.root())
+        .env("CXX", &tool)
+        .env("AR", &tool)
+        .run();
+
+    assert_has_installed_exe(paths::cargo_home(), "foo");
+
+    let foo_bin = paths::cargo_home().join("bin").join(exe("foo"));
+    let output = ProcessBuilder::new(foo_bin).exec_with_output().unwrap();
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(
+        stdout.contains("fake-native-runtime"),
+        "expected installed native executable to run, stdout was: {stdout}"
+    );
+}
+
+#[cargo_test]
 fn install_target_foreign() {
     if cross_compile_disabled() {
         return;
@@ -1933,6 +2685,43 @@ fn uninstall_multiple_and_some_pkg_does_not_exist() {
 }
 
 #[cargo_test]
+fn uninstall_multiple_and_some_pkg_does_not_exist_native_cpp() {
+    let tool = tools::fake_native_tool();
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [package]
+                name = "foo"
+                version = "0.0.1"
+                edition = "2024"
+            "#,
+        )
+        .file("src/main.cpp", "int main() { return 0; }\n")
+        .build();
+
+    cargo_process("install --path")
+        .arg(p.root())
+        .env("CXX", &tool)
+        .env("AR", &tool)
+        .run();
+
+    cargo_process("uninstall foo some-package-from-the-distant-future")
+        .with_status(101)
+        .with_stderr_data(str![[r#"
+[REMOVING] [ROOT]/home/.cargo/bin/foo[EXE]
+[ERROR] package ID specification `some-package-from-the-distant-future` did not match any packages
+[SUMMARY] Successfully uninstalled foo! Failed to uninstall some-package-from-the-distant-future (see error(s) above).
+[ERROR] some packages failed to uninstall
+
+"#]])
+        .run();
+
+    assert_has_not_installed_exe(paths::cargo_home(), "foo");
+    assert_has_not_installed_exe(paths::cargo_home(), "some-package-from-the-distant-future");
+}
+
+#[cargo_test]
 fn custom_target_dir_for_git_source() {
     let p = git::repo(&paths::root().join("foo"))
         .file("Cargo.toml", &basic_manifest("foo", "0.1.0"))
@@ -2042,6 +2831,69 @@ dependencies = [
         .with_status(101)
         .run();
     p.cargo("install --path . --locked").run();
+}
+
+#[cargo_test]
+fn install_path_native_cpp_bin_respects_lock_file() {
+    let tool = tools::fake_native_tool();
+    Package::new("bar", "0.1.0")
+        .file("src/lib.rs", "pub fn ok() {}\n")
+        .publish();
+    Package::new("bar", "0.1.1")
+        .file("src/lib.rs", "not rust")
+        .publish();
+
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [package]
+                name = "foo"
+                version = "0.1.0"
+                edition = "2024"
+                build = "build.rs"
+
+                [build-dependencies]
+                bar = "0.1"
+            "#,
+        )
+        .file("build.rs", "fn main() {}\n")
+        .file("src/main.cpp", "int main() { return 0; }\n")
+        .file(
+            "Cargo.lock",
+            r#"
+[[package]]
+name = "bar"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+
+[[package]]
+name = "foo"
+version = "0.1.0"
+dependencies = [
+ "bar 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
+]
+"#,
+        )
+        .build();
+
+    let err = p
+        .cargo("install --path .")
+        .env("CXX", &tool)
+        .env("AR", &tool)
+        .exec_with_output()
+        .unwrap_err();
+    let err = err.downcast::<ProcessError>().unwrap();
+    let stderr = String::from_utf8(err.stderr.unwrap()).unwrap();
+    assert!(
+        stderr.contains("bar v0.1.1"),
+        "expected unlocked install to resolve the newer dependency, stderr was: {stderr}"
+    );
+
+    p.cargo("install --path . --locked")
+        .env("CXX", &tool)
+        .env("AR", &tool)
+        .run();
 }
 
 #[cargo_test]

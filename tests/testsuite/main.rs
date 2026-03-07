@@ -136,6 +136,7 @@ mod metabuild;
 mod metadata;
 mod minimal_versions;
 mod multitarget;
+mod native_cpp;
 mod net_config;
 mod new;
 mod offline;

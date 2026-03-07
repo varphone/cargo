@@ -3634,6 +3634,124 @@ Caused by:
 }
 
 #[cargo_test]
+fn conflicting_rust_and_cpp_default_targets() {
+    let p = project()
+        .file("Cargo.toml", &basic_bin_manifest("foo"))
+        .file("src/lib.rs", "")
+        .file("src/lib.cpp", "int foo() { return 0; }")
+        .file("src/main.rs", "fn main() {}")
+        .file("src/main.cpp", "int main() { return 0; }")
+        .build();
+
+    p.cargo("check -v")
+        .with_status(101)
+        .with_stderr_contains("[ERROR] failed to parse manifest at `[ROOT]/foo/Cargo.toml`")
+        .with_stderr_contains(
+            "[..]found conflicting library targets at `src/lib.rs` and `src/lib.cpp`[..]",
+        )
+        .run();
+}
+
+#[cargo_test]
+fn conflicting_rust_and_cpp_named_bin_targets() {
+    let p = project()
+        .file("Cargo.toml", &basic_bin_manifest("foo"))
+        .file("src/lib.rs", "")
+        .file("src/bin/foo.rs", "fn main() {}")
+        .file("src/bin/foo.cpp", "int main() { return 0; }")
+        .build();
+
+    p.cargo("check -v")
+        .with_status(101)
+        .with_stderr_contains("[ERROR] failed to parse manifest at `[ROOT]/foo/Cargo.toml`")
+        .with_stderr_contains("[..]found conflicting binary targets `foo` at `src/bin/foo.rs` and `src/bin/foo.cpp`[..]")
+        .run();
+}
+
+#[cargo_test]
+fn native_only_manifest_keys_reject_non_native_targets() {
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [package]
+                name = "foo"
+                version = "0.0.1"
+                edition = "2024"
+
+                [[bin]]
+                name = "foo"
+                path = "src/main.rs"
+                native-include-dirs = ["native/private"]
+            "#,
+        )
+        .file("src/main.rs", "fn main() {}")
+        .file("native/private/config.hpp", "")
+        .build();
+
+    p.cargo("check -v")
+        .with_status(101)
+        .with_stderr_contains("[ERROR] failed to parse manifest at `[ROOT]/foo/Cargo.toml`")
+        .with_stderr_contains("[..]target `foo` sets native-only manifest keys, but those keys are only supported for native C/C++ targets[..]")
+        .run();
+}
+
+#[cargo_test]
+fn native_link_manifest_keys_reject_static_native_libraries() {
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [package]
+                name = "foo"
+                version = "0.0.1"
+                edition = "2024"
+
+                [lib]
+                path = "src/lib.cpp"
+                crate-type = ["staticlib"]
+                native-link-search = ["native/libs"]
+            "#,
+        )
+        .file("src/lib.cpp", "int answer() { return 0; }\n")
+        .file("native/libs/placeholder.lib", "")
+        .build();
+
+    p.cargo("check -v")
+        .with_status(101)
+        .with_stderr_contains("[ERROR] failed to parse manifest at `[ROOT]/foo/Cargo.toml`")
+        .with_stderr_contains("[..]static native library `foo` cannot set native link manifest keys because static libraries are archived rather than linked[..]")
+        .run();
+}
+
+#[cargo_test]
+fn native_link_args_reject_empty_values() {
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [package]
+                name = "foo"
+                version = "0.0.1"
+                edition = "2024"
+
+                [[bin]]
+                name = "foo"
+                path = "src/main.cpp"
+                native-link-args = [""]
+            "#,
+        )
+        .file("src/main.cpp", "int main() { return 0; }\n")
+        .build();
+
+    p.cargo("check -v")
+        .with_status(101)
+        .with_stderr_contains("[ERROR] failed to parse manifest at `[ROOT]/foo/Cargo.toml`")
+        .with_stderr_contains("[..]target `foo` specifies `native-link-args`, but linker arguments cannot be empty strings[..]")
+        .run();
+}
+
+#[cargo_test]
 fn legacy_binary_paths_warnings() {
     let p = project()
         .file(
