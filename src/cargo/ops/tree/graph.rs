@@ -370,7 +370,8 @@ pub fn build<'a>(
     opts: &TreeOptions,
 ) -> CargoResult<Graph<'a>> {
     let mut graph = Graph::new(package_map);
-    let mut members_with_features = ws.members_with_features(specs, cli_features)?;
+    let mut members_with_features =
+        ws.members_with_features_for_kinds(specs, cli_features, requested_kinds)?;
     members_with_features.sort_unstable_by_key(|(member, _)| member.package_id());
     for (member, cli_features) in members_with_features {
         let member_id = member.package_id();

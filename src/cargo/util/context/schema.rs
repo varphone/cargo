@@ -420,7 +420,7 @@ impl<'de> Deserialize<'de> for ProgressConfig {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 enum EnvConfigValueInner {
     Simple(String),
     WithOptions {
@@ -472,7 +472,7 @@ impl<'de> Deserialize<'de> for EnvConfigValueInner {
 /// BAR = { value = "relative/path", relative = true }
 /// BAZ = { value = "override", force = true }
 /// ```
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 #[serde(transparent)]
 pub struct EnvConfigValue {
     inner: Value<EnvConfigValueInner>,
@@ -511,3 +511,13 @@ impl EnvConfigValue {
 }
 
 pub type EnvConfig = HashMap<String, EnvConfigValue>;
+
+/// Package feature selection for a target-specific config entry.
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct TargetPackageFeatureConfig {
+    pub default_features: Option<bool>,
+    pub features: Option<StringList>,
+}
+
+pub type TargetPackageFeaturesConfig = HashMap<String, TargetPackageFeatureConfig>;

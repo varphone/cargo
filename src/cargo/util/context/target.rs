@@ -1,4 +1,7 @@
-use super::{CV, ConfigKey, ConfigRelativePath, GlobalContext, OptValue, PathAndArgs, StringList};
+use super::{
+    CV, ConfigKey, ConfigRelativePath, EnvConfig, GlobalContext, OptValue, PathAndArgs, StringList,
+    TargetPackageFeaturesConfig,
+};
 use crate::core::compiler::{BuildOutput, LibraryPath, LinkArgTarget};
 use crate::util::CargoResult;
 use serde::Deserialize;
@@ -32,6 +35,10 @@ pub struct TargetConfig {
     pub rustdocflags: OptValue<StringList>,
     /// The path of the linker for this target.
     pub linker: OptValue<ConfigRelativePath>,
+    /// Additional environment variables to set for commands executed for this target.
+    pub env: OptValue<EnvConfig>,
+    /// Package-specific feature defaults to apply when building for this target.
+    pub package_features: OptValue<TargetPackageFeaturesConfig>,
     /// Build script override for the given library name.
     ///
     /// Any package with a `links` value for the given library name will skip
@@ -125,6 +132,9 @@ fn load_config_table(gctx: &GlobalContext, prefix: &str) -> CargoResult<TargetCo
     let rustflags: OptValue<StringList> = gctx.get(&format!("{prefix}.rustflags"))?;
     let rustdocflags: OptValue<StringList> = gctx.get(&format!("{prefix}.rustdocflags"))?;
     let linker: OptValue<ConfigRelativePath> = gctx.get(&format!("{prefix}.linker"))?;
+    let env: OptValue<EnvConfig> = gctx.get(&format!("{prefix}.env"))?;
+    let package_features: OptValue<TargetPackageFeaturesConfig> =
+        gctx.get(&format!("{prefix}.package-features"))?;
     // Links do not support environment variables.
     let target_key = ConfigKey::from_str(prefix);
     let links_overrides = match gctx.get_table(&target_key)? {
@@ -136,6 +146,8 @@ fn load_config_table(gctx: &GlobalContext, prefix: &str) -> CargoResult<TargetCo
         rustflags,
         rustdocflags,
         linker,
+        env,
+        package_features,
         links_overrides: Rc::new(links_overrides),
     })
 }
@@ -150,7 +162,8 @@ fn parse_links_overrides(
         // Skip these keys, it shares the namespace with `TargetConfig`.
         match lib_name.as_str() {
             // `ar` is a historical thing.
-            "ar" | "linker" | "runner" | "rustflags" | "rustdocflags" => continue,
+            "ar" | "env" | "linker" | "package-features" | "runner" | "rustflags"
+            | "rustdocflags" => continue,
             _ => {}
         }
         let mut output = BuildOutput::default();

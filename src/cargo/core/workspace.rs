@@ -11,7 +11,7 @@ use itertools::Itertools;
 use tracing::debug;
 use url::Url;
 
-use crate::core::compiler::Unit;
+use crate::core::compiler::{CompileKind, Unit};
 use crate::core::features::Features;
 use crate::core::registry::PackageRegistry;
 use crate::core::resolver::ResolveBehavior;
@@ -1467,6 +1467,80 @@ impl<'gctx> Workspace<'gctx> {
         } else {
             Ok(self.members_with_features_old(specs, cli_features))
         }
+    }
+
+    /// Same as [`Workspace::members_with_features`], but also applies
+    /// `target.<triple>.package-features` for the requested target.
+    pub fn members_with_features_for_kinds(
+        &self,
+        specs: &[PackageIdSpec],
+        cli_features: &CliFeatures,
+        requested_kinds: &[CompileKind],
+    ) -> CargoResult<Vec<(&Package, CliFeatures)>> {
+        let mut members = self.members_with_features(specs, cli_features)?;
+        self.apply_target_package_features(&mut members, requested_kinds)?;
+        Ok(members)
+    }
+
+    fn apply_target_package_features(
+        &self,
+        members: &mut [(&Package, CliFeatures)],
+        requested_kinds: &[CompileKind],
+    ) -> CargoResult<()> {
+        let Some(package_features) = self.target_package_features_for_kinds(requested_kinds)?
+        else {
+            return Ok(());
+        };
+
+        for (member, cli_features) in members.iter_mut() {
+            let Some(package_config) = package_features.get(member.name().as_str()) else {
+                continue;
+            };
+
+            if cli_features.all_features {
+                continue;
+            }
+            if let Some(uses_default_features) = package_config.default_features {
+                cli_features.uses_default_features &= uses_default_features;
+            }
+            if let Some(features) = package_config.features.as_ref() {
+                Rc::make_mut(&mut cli_features.features).extend(
+                    features
+                        .as_slice()
+                        .iter()
+                        .map(|feature| FeatureValue::new(feature.as_str().into())),
+                );
+            }
+        }
+
+        Ok(())
+    }
+
+    fn target_package_features_for_kinds(
+        &self,
+        requested_kinds: &[CompileKind],
+    ) -> CargoResult<Option<context::TargetPackageFeaturesConfig>> {
+        let target_count = requested_kinds
+            .iter()
+            .filter(|kind| matches!(kind, CompileKind::Target(_)))
+            .count();
+        let mut package_features = None;
+
+        for kind in requested_kinds {
+            let CompileKind::Target(target) = kind else {
+                continue;
+            };
+            let target_cfg = self.gctx.target_cfg_triple(target.short_name())?;
+            let Some(target_package_features) = target_cfg.package_features else {
+                continue;
+            };
+            if target_count > 1 {
+                bail!("`target.<triple>.package-features` only supports a single requested target");
+            }
+            package_features = Some(target_package_features.val);
+        }
+
+        Ok(package_features)
     }
 
     /// Returns the requested features for the given member.

@@ -11,6 +11,7 @@ use crate::core::PackageIdSpecQuery;
 use crate::core::Shell;
 use crate::core::Verbosity;
 use crate::core::Workspace;
+use crate::core::compiler::CompileKind;
 use crate::core::dependency::DepKind;
 use crate::core::manifest::Target;
 use crate::core::resolver::CliFeatures;
@@ -205,7 +206,9 @@ pub fn package(ws: &Workspace<'_>, opts: &PackageOpts<'_>) -> CargoResult<Vec<Fi
             spec.query(member_ids)?;
         }
     }
-    let mut pkgs = ws.members_with_features(specs, &opts.cli_features)?;
+    let requested_kinds = CompileKind::from_requested_targets(ws.gctx(), &opts.targets)?;
+    let mut pkgs =
+        ws.members_with_features_for_kinds(specs, &opts.cli_features, &requested_kinds)?;
 
     // In `members_with_features_old`, it will add "current" package (determined by the cwd)
     // So we need filter
@@ -772,6 +775,7 @@ fn build_lock(
     let mut new_resolve = ops::resolve_with_previous(
         &mut tmp_reg,
         &tmp_ws,
+        &[],
         &CliFeatures::new_all(true),
         HasDevUnits::Yes,
         orig_resolve.as_ref(),

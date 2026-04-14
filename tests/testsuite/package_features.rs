@@ -4,6 +4,7 @@ use std::fmt::Write;
 
 use crate::prelude::*;
 use cargo_test_support::registry::{Dependency, Package};
+use cargo_test_support::rustc_host;
 use cargo_test_support::{basic_manifest, project, str};
 
 use super::features2::switch_to_resolver_2;
@@ -71,7 +72,6 @@ fn virtual_no_default_features() {
             .unordered(),
         )
         .run();
-
     p.cargo("check --features foo")
         .with_status(101)
         .with_stderr_data(str![[r#"
@@ -117,6 +117,97 @@ selected packages: a, b
         .with_stderr_data(str![[r#"
 [ERROR] the package 'b' does not contain this feature: dep1
 [HELP] package with the missing feature: a
+
+"#]])
+        .run();
+}
+
+#[cargo_test]
+fn target_package_features() {
+    let target = rustc_host();
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+            [package]
+            name = "foo"
+            version = "0.1.0"
+            edition = "2015"
+
+            [features]
+            default = ["default-on"]
+            default-on = []
+            extra = []
+            "#,
+        )
+        .file(
+            "src/lib.rs",
+            r#"
+            #[cfg(feature = "default-on")]
+            compile_error!("default feature should be disabled");
+
+            #[cfg(not(feature = "extra"))]
+            compile_error!("extra feature should be enabled");
+            "#,
+        )
+        .file(
+            ".cargo/config.toml",
+            &format!(
+                r#"
+                [target.{target}.package-features]
+                foo = {{ default-features = false, features = ["extra"] }}
+                "#
+            ),
+        )
+        .build();
+
+    p.cargo("check --target")
+        .arg(&target)
+        .with_stderr_data(str![[r#"
+[CHECKING] foo v0.1.0 ([ROOT]/foo)
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+
+"#]])
+        .run();
+}
+
+#[cargo_test]
+fn target_package_features_rejects_multiple_targets() {
+    let host_target = rustc_host();
+    let other_target = "aarch64-unknown-none";
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+            [package]
+            name = "foo"
+            version = "0.1.0"
+            edition = "2015"
+
+            [features]
+            default = []
+            extra = []
+            "#,
+        )
+        .file("src/lib.rs", "")
+        .file(
+            ".cargo/config.toml",
+            &format!(
+                r#"
+                [target.{host_target}.package-features]
+                foo = {{ features = ["extra"] }}
+                "#
+            ),
+        )
+        .build();
+
+    p.cargo("package --allow-dirty --target")
+        .arg(&host_target)
+        .arg("--target")
+        .arg(other_target)
+        .with_status(101)
+        .with_stderr_data(str![[r#"
+[ERROR] `target.<triple>.package-features` only supports a single requested target
 
 "#]])
         .run();

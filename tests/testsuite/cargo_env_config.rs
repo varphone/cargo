@@ -2,6 +2,7 @@
 
 use crate::prelude::*;
 use cargo_test_support::basic_manifest;
+use cargo_test_support::rustc_host;
 use cargo_test_support::str;
 use cargo_test_support::{basic_bin_manifest, project};
 
@@ -202,6 +203,87 @@ fn env_no_override() {
 CARGO_PKG_NAME:unchanged
 
 "#]])
+        .run();
+}
+
+#[cargo_test]
+fn target_env_basic() {
+    let target = rustc_host();
+    let p = project()
+        .file("Cargo.toml", &basic_bin_manifest("foo"))
+        .file(
+            "src/main.rs",
+            r#"
+        use std::env;
+        fn main() {
+            println!("compile-time:{}", env!("TARGET_ENV_TEST"));
+            println!("run-time:{}", env::var("TARGET_ENV_TEST").unwrap());
+        }
+        "#,
+        )
+        .file(
+            ".cargo/config.toml",
+            &format!(
+                r#"
+                [target.{target}.env]
+                TARGET_ENV_TEST = "from-target-config"
+                "#
+            ),
+        )
+        .build();
+
+    p.cargo("run --target")
+        .arg(&target)
+        .with_stdout_data(str![[r#"
+compile-time:from-target-config
+run-time:from-target-config
+
+"#]])
+        .run();
+}
+
+#[cargo_test]
+fn target_env_change_invalidates_build() {
+    let target = rustc_host();
+    let p = project()
+        .file("Cargo.toml", &basic_bin_manifest("foo"))
+        .file(
+            "src/main.rs",
+            r#"
+        fn main() {
+            println!("{}", env!("TARGET_ENV_TEST"));
+        }
+        "#,
+        )
+        .file(
+            ".cargo/config.toml",
+            &format!(
+                r#"
+                [target.{target}.env]
+                TARGET_ENV_TEST = "first"
+                "#
+            ),
+        )
+        .build();
+
+    p.cargo("build --target").arg(&target).run();
+
+    p.change_file(
+        ".cargo/config.toml",
+        &format!(
+            r#"
+            [target.{target}.env]
+            TARGET_ENV_TEST = "second"
+            "#
+        ),
+    );
+
+    p.cargo("build --target")
+        .arg(&target)
+        .arg("-v")
+        .with_stderr_data(str![
+            "[DIRTY] foo v0.5.0 ([ROOT]/foo): the environment variable TARGET_ENV_TEST changed\n[COMPILING] foo v0.5.0 ([ROOT]/foo)\n[RUNNING] `rustc [..]\n[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s\n\n"
+        ])
         .run();
 }
 

@@ -105,7 +105,7 @@ use crate::core::profiles::{PanicStrategy, Profile, StripInner};
 use crate::core::{Feature, PackageId, Target, Verbosity};
 use crate::lints::get_key_value;
 use crate::util::OnceExt;
-use crate::util::context::WarningHandling;
+use crate::util::context::{TargetConfig, WarningHandling};
 use crate::util::errors::{CargoResult, VerboseError};
 use crate::util::interning::InternedString;
 use crate::util::machine_message::{self, Message};
@@ -365,7 +365,10 @@ fn rustc(
     if hide_diagnostics_for_scrape_unit {
         output_options.show_diagnostics = false;
     }
-    let env_config = Arc::clone(build_runner.bcx.gctx.env_config()?);
+    let env_config = Arc::new(env_config_for_target(
+        build_runner.bcx.gctx,
+        Some(build_runner.bcx.target_data.target_config(unit.kind)),
+    )?);
     return Ok(Work::new(move |state| {
         // Artifacts are in a different location than typical units,
         // hence we must assure the crate- and target-dependent
@@ -996,7 +999,10 @@ fn rustdoc(build_runner: &mut BuildRunner<'_, '_>, unit: &Unit) -> CargoResult<W
         .to_path_buf();
     let fingerprint_dir = build_runner.files().fingerprint_dir(unit);
     let is_local = unit.is_local();
-    let env_config = Arc::clone(build_runner.bcx.gctx.env_config()?);
+    let env_config = Arc::new(env_config_for_target(
+        build_runner.bcx.gctx,
+        Some(build_runner.bcx.target_data.target_config(unit.kind)),
+    )?);
     let rustdoc_depinfo_enabled = build_runner.bcx.gctx.cli_unstable().rustdoc_depinfo;
 
     let mut output_options = OutputOptions::new(build_runner, unit);
@@ -2555,12 +2561,44 @@ fn descriptive_pkg_name(name: &str, target: &Target, mode: &CompileMode) -> Stri
     format!("`{name}` ({desc_name}{mode})")
 }
 
-/// Applies environment variables from config `[env]` to [`ProcessBuilder`].
+fn merged_env_config(
+    gctx: &crate::GlobalContext,
+    target_cfg: Option<&TargetConfig>,
+) -> CargoResult<HashMap<String, OsString>> {
+    const DISALLOWED_ENV_KEYS: &[&str] = &["CARGO_HOME", "RUSTUP_HOME", "RUSTUP_TOOLCHAIN"];
+
+    let Some(target_cfg) = target_cfg else {
+        return Ok(gctx.env_config()?.as_ref().clone());
+    };
+    let Some(target_env) = target_cfg.env.as_ref() else {
+        return Ok(gctx.env_config()?.as_ref().clone());
+    };
+
+    let mut env = gctx.env_config()?.as_ref().clone();
+    for disallowed in DISALLOWED_ENV_KEYS {
+        if target_env.val.contains_key(*disallowed) {
+            anyhow::bail!(
+                "setting the `{disallowed}` environment variable is not supported in the `[target.<triple>.env]` configuration table"
+            );
+        }
+    }
+    for (key, value) in &target_env.val {
+        if value.is_force() || gctx.get_env_os(key).is_none() || env.contains_key(key) {
+            env.insert(key.clone(), value.resolve(gctx.cwd()).into_owned());
+        }
+    }
+    Ok(env)
+}
+
+/// Applies environment variables from config `[env]` and `[target.<triple>.env]`
+/// to [`ProcessBuilder`].
 pub(crate) fn apply_env_config(
     gctx: &crate::GlobalContext,
+    target_cfg: Option<&TargetConfig>,
     cmd: &mut ProcessBuilder,
 ) -> CargoResult<()> {
-    for (key, value) in gctx.env_config()?.iter() {
+    let env = merged_env_config(gctx, target_cfg)?;
+    for (key, value) in &env {
         // never override a value that has already been set by cargo
         if cmd.get_envs().contains_key(key) {
             continue;
@@ -2568,6 +2606,13 @@ pub(crate) fn apply_env_config(
         cmd.env(key, value);
     }
     Ok(())
+}
+
+pub(crate) fn env_config_for_target(
+    gctx: &crate::GlobalContext,
+    target_cfg: Option<&TargetConfig>,
+) -> CargoResult<HashMap<String, OsString>> {
+    merged_env_config(gctx, target_cfg)
 }
 
 /// Checks if there are some scrape units waiting to be processed.

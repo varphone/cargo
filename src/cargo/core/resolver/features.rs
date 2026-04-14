@@ -487,7 +487,9 @@ impl<'a, 'gctx> FeatureResolver<'a, 'gctx> {
         specs: &[PackageIdSpec],
         cli_features: &CliFeatures,
     ) -> CargoResult<()> {
-        let member_features = self.ws.members_with_features(specs, cli_features)?;
+        let member_features =
+            self.ws
+                .members_with_features_for_kinds(specs, cli_features, self.requested_targets)?;
         for (member, cli_features) in &member_features {
             let fvs = self.fvs_from_requested(member.package_id(), cli_features);
             let fk = if self.track_for_host && self.has_any_proc_macro(member.package_id()) {

@@ -931,6 +931,7 @@ impl LocalFingerprint {
         pkg: &Package,
         build_root: &Path,
         cargo_exe: &Path,
+        env_config: &HashMap<String, OsString>,
         gctx: &GlobalContext,
     ) -> CargoResult<Option<StaleItem>> {
         let pkg_root = pkg.root();
@@ -961,7 +962,7 @@ impl LocalFingerprint {
                             )
                         })?)
                     } else {
-                        if let Some(value) = gctx.env_config()?.get(key) {
+                        if let Some(value) = env_config.get(key) {
                             value.to_str()
                         } else {
                             gctx.get_env(key).ok()
@@ -1243,6 +1244,7 @@ impl Fingerprint {
         pkg: &Package,
         build_root: &Path,
         cargo_exe: &Path,
+        env_config: &HashMap<String, OsString>,
         gctx: &GlobalContext,
     ) -> CargoResult<()> {
         assert!(!self.fs_status.up_to_date());
@@ -1352,6 +1354,7 @@ impl Fingerprint {
                 pkg,
                 build_root,
                 cargo_exe,
+                env_config,
                 gctx,
             )? {
                 item.log();
@@ -1540,12 +1543,17 @@ fn calculate(build_runner: &mut BuildRunner<'_, '_>, unit: &Unit) -> CargoResult
     // `fs_status` field of it.
     let build_root = build_root(build_runner);
     let cargo_exe = build_runner.bcx.gctx.cargo_exe()?;
+    let env_config = super::env_config_for_target(
+        build_runner.bcx.gctx,
+        Some(build_runner.bcx.target_data.target_config(unit.kind)),
+    )?;
     fingerprint.check_filesystem(
         &mut build_runner.mtime_cache,
         &mut build_runner.checksum_cache,
         &unit.pkg,
         &build_root,
         cargo_exe,
+        &env_config,
         build_runner.bcx.gctx,
     )?;
 
@@ -1822,7 +1830,10 @@ fn build_script_local_fingerprints(
     // obvious.
     let pkg_root = unit.pkg.root().to_path_buf();
     let build_dir = build_root(build_runner);
-    let env_config = Arc::clone(build_runner.bcx.gctx.env_config()?);
+    let env_config = Arc::new(super::env_config_for_target(
+        build_runner.bcx.gctx,
+        Some(build_runner.bcx.target_data.target_config(unit.kind)),
+    )?);
     let calculate =
         move |deps: &BuildDeps, pkg_fingerprint: Option<&dyn Fn() -> CargoResult<String>>| {
             if deps.rerun_if_changed.is_empty() && deps.rerun_if_env_changed.is_empty() {

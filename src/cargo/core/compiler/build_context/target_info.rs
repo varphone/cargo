@@ -173,6 +173,10 @@ impl TargetInfo {
     ) -> CargoResult<TargetInfo> {
         let mut rustflags =
             extra_args(gctx, requested_kinds, &rustc.host, None, kind, Flags::Rust)?;
+        let target_cfg = match kind {
+            CompileKind::Host => None,
+            CompileKind::Target(target) => Some(gctx.target_cfg_triple(target.short_name())?),
+        };
         let mut turn = 0;
         loop {
             let extra_fingerprint = kind.fingerprint_hash();
@@ -185,7 +189,7 @@ impl TargetInfo {
             //
             // Search `--print` to see what we query so far.
             let mut process = rustc.workspace_process();
-            apply_env_config(gctx, &mut process)?;
+            apply_env_config(gctx, target_cfg.as_ref(), &mut process)?;
             process
                 .arg("-")
                 .arg("--crate-name")
@@ -324,7 +328,7 @@ impl TargetInfo {
             // target-spec when the '-Zbuild-std' option is passed.
             if gctx.cli_unstable().build_std.is_some() {
                 let mut target_spec_process = rustc.workspace_process();
-                apply_env_config(gctx, &mut target_spec_process)?;
+                apply_env_config(gctx, target_cfg.as_ref(), &mut target_spec_process)?;
                 target_spec_process
                     .arg("--print=target-spec-json")
                     .arg("-Zunstable-options")

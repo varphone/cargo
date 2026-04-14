@@ -11,6 +11,7 @@ use std::io::Seek;
 use std::io::SeekFrom;
 use std::time::Duration;
 
+use crate::core::compiler::CompileKind;
 use annotate_snippets::Level;
 use anyhow::Context as _;
 use anyhow::bail;
@@ -77,7 +78,9 @@ pub fn publish(ws: &Workspace<'_>, opts: &PublishOpts<'_>) -> CargoResult<()> {
     for spec in &specs {
         spec.query(member_ids.clone())?;
     }
-    let mut pkgs = ws.members_with_features(&specs, &opts.cli_features)?;
+    let requested_kinds = CompileKind::from_requested_targets(ws.gctx(), &opts.targets)?;
+    let mut pkgs =
+        ws.members_with_features_for_kinds(&specs, &opts.cli_features, &requested_kinds)?;
     // In `members_with_features_old`, it will add "current" package (determined by the cwd)
     // So we need filter
     pkgs.retain(|(m, _)| specs.iter().any(|spec| spec.matches(m.package_id())));

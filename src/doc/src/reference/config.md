@@ -176,7 +176,9 @@ tag = "…"            # tag name for the git repository
 rev = "…"            # revision for the git repository
 
 [target.<triple>]
+env.VAR = "..."             # environment variables for commands run for this target
 linker = "…"              # linker to use
+package-features.foo = { features = ["..."], default-features = false }
 runner = "…"              # wrapper to run executables
 rustflags = ["…", "…"]    # custom flags for `rustc`
 rustdocflags = ["…", "…"] # custom flags for `rustdoc`
@@ -1318,6 +1320,12 @@ linker = "arm-none-eabi-gcc"
 runner = "my-emulator"
 rustflags = ["…", "…"]
 
+[target.thumbv7m-none-eabi.env]
+OPENOCD_INTERFACE = "cmsis-dap"
+
+[target.thumbv7m-none-eabi.package-features]
+my-crate = { default-features = false, features = ["embedded"] }
+
 [target.'cfg(all(target_arch = "arm", target_os = "none"))']
 runner = "my-arm-wrapper"
 rustflags = ["…", "…"]
@@ -1365,6 +1373,34 @@ This is similar to the [target runner](#targettriplerunner), but using
 a [`cfg()` expression]. If both a [`<triple>`] and `<cfg>` runner match,
 the `<triple>` will take precedence. It is an error if more than one
 `<cfg>` runner matches the current target.
+
+#### `target.<triple>.env`
+* Type: table
+* Default: none
+
+Sets environment variables for commands executed for this [`<triple>`]. The
+format is the same as the top-level [`env`](#env) table, and it is applied on
+top of that table for commands that run for the selected target.
+
+This is only supported for concrete [`<triple>`] tables.
+
+#### `target.<triple>.package-features`
+* Type: table
+* Default: none
+
+Configures default feature selection for workspace packages when building for
+this [`<triple>`]. Each key is a package name, and the value is a table with
+the same fields used for feature selection elsewhere:
+
+```toml
+[target.x86_64-unknown-linux-gnu.package-features]
+my-crate = { default-features = false, features = ["simd"] }
+```
+
+`features` are added to the selected package, and `default-features = false`
+disables that package's default feature.
+
+This setting only supports a single requested target triple.
 
 #### `target.<triple>.rustflags`
 * Type: string or array of strings

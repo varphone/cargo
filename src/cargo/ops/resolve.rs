@@ -180,6 +180,7 @@ pub fn resolve_ws_with_opts<'gctx>(
         let resolved_with_overrides = resolve_with_previous(
             &mut registry,
             ws,
+            requested_targets,
             cli_features,
             has_dev_units,
             resolve.as_ref(),
@@ -238,6 +239,7 @@ pub fn resolve_ws_with_opts<'gctx>(
         let resolved_with_overrides = resolve_with_previous(
             &mut registry,
             ws,
+            requested_targets,
             cli_features,
             has_dev_units,
             Some(&resolve),
@@ -252,6 +254,7 @@ pub fn resolve_ws_with_opts<'gctx>(
         let resolved_with_overrides = resolve_with_previous(
             &mut registry,
             ws,
+            requested_targets,
             cli_features,
             has_dev_units,
             resolve.as_ref(),
@@ -266,7 +269,8 @@ pub fn resolve_ws_with_opts<'gctx>(
 
     let pkg_set = get_resolved_packages(&resolved_with_overrides, registry)?;
 
-    let members_with_features = ws.members_with_features(specs, cli_features)?;
+    let members_with_features =
+        ws.members_with_features_for_kinds(specs, cli_features, requested_targets)?;
     let member_ids = members_with_features
         .iter()
         .map(|(p, _fts)| p.package_id())
@@ -357,6 +361,7 @@ fn resolve_with_registry<'gctx>(
     let mut resolve = resolve_with_previous(
         registry,
         ws,
+        &[],
         &CliFeatures::new_all(true),
         HasDevUnits::Yes,
         prev.as_ref(),
@@ -404,6 +409,7 @@ fn resolve_with_registry<'gctx>(
 pub fn resolve_with_previous<'gctx>(
     registry: &mut PackageRegistry<'gctx>,
     ws: &Workspace<'gctx>,
+    requested_targets: &[CompileKind],
     cli_features: &CliFeatures,
     has_dev_units: HasDevUnits,
     previous: Option<&Resolve>,
@@ -485,7 +491,7 @@ pub fn resolve_with_previous<'gctx>(
 
     let summaries: Vec<(Summary, ResolveOpts)> = {
         let _span = tracing::span!(tracing::Level::TRACE, "registry.lock").entered();
-        ws.members_with_features(specs, cli_features)?
+        ws.members_with_features_for_kinds(specs, cli_features, requested_targets)?
             .into_iter()
             .map(|(member, features)| {
                 let summary = registry.lock(member.summary().clone());

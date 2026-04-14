@@ -386,7 +386,11 @@ impl<'gctx> Compilation<'gctx> {
 
         cmd.cwd(pkg.root());
 
-        apply_env_config(self.gctx, &mut cmd)?;
+        let target_cfg = match kind {
+            CompileKind::Host => None,
+            CompileKind::Target(target) => Some(self.gctx.target_cfg_triple(target.short_name())?),
+        };
+        apply_env_config(self.gctx, target_cfg.as_ref(), &mut cmd)?;
 
         Ok(cmd)
     }

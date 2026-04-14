@@ -215,8 +215,12 @@ pub fn print<'a>(
             drop_println!(gctx);
         }
         let target_info = TargetInfo::new(gctx, &build_config.requested_kinds, &rustc, *kind)?;
+        let target_cfg = match kind {
+            CompileKind::Host => None,
+            CompileKind::Target(target) => Some(gctx.target_cfg_triple(target.short_name())?),
+        };
         let mut process = rustc.process();
-        apply_env_config(gctx, &mut process)?;
+        apply_env_config(gctx, target_cfg.as_ref(), &mut process)?;
         process.args(&target_info.rustflags);
         if let Some(args) = target_rustc_args {
             process.args(args);
@@ -289,7 +293,7 @@ pub fn create_bcx<'a, 'gctx>(
         // workspace, if any of those packages need dev-dependencies, then we need include dev-dependencies
         // to scrape those packages.
         let any_pkg_has_scrape_enabled = ws
-            .members_with_features(&specs, cli_features)?
+            .members_with_features_for_kinds(&specs, cli_features, &build_config.requested_kinds)?
             .iter()
             .any(|(pkg, _)| {
                 pkg.targets()
